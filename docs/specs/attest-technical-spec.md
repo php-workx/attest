@@ -306,7 +306,15 @@ This file is the canonical record for unresolved and resolved clarifications.
 Required task fields:
 
 - `task_id`
+- `slug`
 - `title`
+- `task_type`
+- `tags`
+- `created_at`
+- `updated_at`
+- `order`
+- `etag`
+- `lineage_id`
 - `requirement_ids`
 - `depends_on`
 - `scope`
@@ -330,6 +338,23 @@ Required task fields:
 
 - `direct`
 - `patch_handoff`
+
+Field rules:
+
+- `slug` is a short human-readable identifier derived from the title for logs and task views
+- `task_type` is a planner classification such as `implementation`, `repair`, `review_followup`, or `clarification_followup`
+- `tags` are normalized lowercase labels for operator and agent filtering
+- `created_at` and `updated_at` record canonical task lifecycle timestamps
+- `order` is a stable presentation hint within the same priority band and parent lineage
+- `etag` is the task content hash used for internal compare-and-swap updates and agent-facing read consistency
+- `lineage_id` is stable across a root task and any repair children created from the same completion lineage
+
+Relationship rules:
+
+- `depends_on` is the canonical hard dependency edge used for dispatchability and `attest ready`
+- runtime blockers such as reviewer findings, backend outages, or human-input requirements live in `run-status.json`, not `tasks.json`
+- `parent_task_id` groups repair or follow-up tasks under their originating task when a lineage is split
+- canonical task ownership is expressed through claims, not through an `assignee` field on the task
 
 ### 3.5 `requirement-coverage.json`
 
@@ -534,6 +559,11 @@ v1 command surface:
 - `attest review <run-id>`
 - `attest approve <run-id> [--launch]`
 - `attest launch <run-id>`
+- `attest tasks <run-id>`
+- `attest ready <run-id>`
+- `attest blocked <run-id>`
+- `attest next <run-id>`
+- `attest progress <run-id>`
 - `attest status [<run-id>]`
 - `attest explain <run-id>`
 - `attest resume <run-id>`
@@ -570,6 +600,48 @@ The approval summary must include:
 - with no `run-id`, list all runs in the repository
 - with `run-id`, render the current run summary
 
+`attest tasks <run-id>`
+
+- renders the task read model for one run
+- must support both human-readable and `--json` output
+- is the primary low-token agent query surface in v1 instead of GraphQL
+- must support filter flags for at least:
+  - `--status`
+  - `--task-type`
+  - `--priority`
+  - `--tag`
+  - `--requirement-id`
+  - `--wave`
+  - `--limit`
+  - `--ready`
+  - `--blocked`
+
+`attest ready <run-id>`
+
+- renders only dispatchable tasks
+- is a convenience wrapper over `attest tasks --ready`
+- must support `--json`
+- orders tasks by priority, then `order`, then stable `task_id`
+
+`attest blocked <run-id>`
+
+- renders only non-dispatchable tasks with unresolved blockers
+- is a convenience wrapper over `attest tasks --blocked`
+- must group blockers by reason in human-readable mode
+- must support `--json`
+
+`attest next <run-id>`
+
+- returns the single highest-priority dispatchable task
+- if no task is ready, it must point the operator to the highest-impact blocker instead of returning an empty success
+- must support `--json`
+
+`attest progress <run-id>`
+
+- renders counts by task state and requirement coverage state
+- must include a completion percentage derived from task closure and requirement coverage
+- must support `--json`
+
 `attest explain <run-id>`
 
 - explains why the run is not finished
@@ -587,6 +659,18 @@ The approval summary must include:
 - allows in-flight workers to finish within the current lease window by default
 - expires remaining active claims after the grace window ends
 - transitions the run to `stopped`
+
+### 5.3 Read-model rules
+
+Task and status read commands are part of the product contract, not presentation-only helpers.
+
+Rules:
+
+- every read command that can be used by an agent must support `--json`
+- JSON output must use stable field names and include task `etag` values when tasks are returned
+- human-readable commands may group, sort, or summarize data, but the JSON mode must stay structurally predictable
+- `attest ready`, `attest blocked`, `attest next`, and `attest progress` are convenience projections over canonical run state and must not introduce separate hidden state
+- v1 intentionally prefers filtered CLI read models over a general GraphQL layer
 
 ## 6. Run lifecycle
 

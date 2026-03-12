@@ -157,6 +157,7 @@ Cover:
 - writing and reading `run-artifact.json`
 - writing and reading `tasks.json`
 - writing and reading `run-status.json`
+- stable round-trip for task metadata such as `slug`, `task_type`, `tags`, `order`, `etag`, and `lineage_id`
 
 **Step 2: Run the tests to verify they fail**
 
@@ -170,6 +171,7 @@ Implement:
 - strongly typed Go structs for run artifact, task, claim, and run status
 - atomic JSON write helper using temp file + rename
 - JSON read helper with schema version checks
+- task-hash helper for `etag` generation and compare-and-swap style writes inside the state layer
 
 **Step 4: Run the tests to verify they pass**
 
@@ -579,11 +581,16 @@ git add internal/repair/reconcile.go internal/repair/reconcile_test.go internal/
 git commit -m "feat: add repair task reconciliation"
 ```
 
-### Task 13: Implement status, explain, and resume commands
+### Task 13: Implement task query, status, explain, and resume commands
 
 **Files:**
 - Create: `internal/status/render.go`
 - Create: `internal/status/render_test.go`
+- Create: `internal/cli/tasks.go`
+- Create: `internal/cli/ready.go`
+- Create: `internal/cli/blocked.go`
+- Create: `internal/cli/next.go`
+- Create: `internal/cli/progress.go`
 - Create: `internal/cli/status.go`
 - Create: `internal/cli/explain.go`
 - Create: `internal/cli/resume.go`
@@ -592,6 +599,9 @@ git commit -m "feat: add repair task reconciliation"
 
 Cover:
 
+- task list rendering with filters
+- `--json` read-model output for agent consumption
+- `ready`, `blocked`, `next`, and `progress` projections
 - summary of task counts by state
 - blocker explanation output
 - uncovered requirement rendering
@@ -602,14 +612,20 @@ Cover:
 Run: `go test ./internal/status ./internal/cli`
 Expected: FAIL because status rendering does not exist.
 
-**Step 3: Implement status and resume flow**
+**Step 3: Implement read-model, status, and resume flow**
 
 Implement:
 
+- `attest tasks`
+- `attest ready`
+- `attest blocked`
+- `attest next`
+- `attest progress`
 - `attest status`
 - `attest explain`
 - `attest resume`
 - human-readable summaries from `run-status.json` and task reports
+- stable `--json` output that includes task `etag` values on task-returning commands
 
 **Step 4: Run the tests to verify they pass**
 
@@ -619,8 +635,8 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add internal/status/render.go internal/status/render_test.go internal/cli/status.go internal/cli/explain.go internal/cli/resume.go
-git commit -m "feat: add status and resume commands"
+git add internal/status/render.go internal/status/render_test.go internal/cli/tasks.go internal/cli/ready.go internal/cli/blocked.go internal/cli/next.go internal/cli/progress.go internal/cli/status.go internal/cli/explain.go internal/cli/resume.go
+git commit -m "feat: add task query and status commands"
 ```
 
 ### Task 14: Add end-to-end run tests

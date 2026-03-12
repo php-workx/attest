@@ -243,6 +243,9 @@ The council is the independent multi-model review stage. In v1 it includes:
 - **AT-FR-031**: The system must explain open blockers in plain language and link them to affected requirements and tasks.
 - **AT-FR-032**: The system must show uncovered requirement IDs for any incomplete run.
 - **AT-FR-033**: The system must show which reviewer or verifier blocked a task and why.
+- **AT-FR-034**: The system must expose first-class task views for `ready`, `blocked`, `next`, and `progress`.
+- **AT-FR-035**: The system must support filtered task queries suitable for low-token agent use without requiring a separate UI.
+- **AT-FR-036**: Task views returned to agents must support a stable machine-readable form.
 
 ## 9. User journeys
 
