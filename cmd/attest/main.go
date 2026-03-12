@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
@@ -34,6 +35,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		err = cmdApprove(ctx, args[1:])
 	case "status":
 		err = cmdStatus(ctx, args[1:])
+	case "report":
+		err = cmdReport(args[1:])
 	case "verify":
 		err = cmdVerify(ctx, args[1:])
 	case "tasks":
@@ -68,6 +71,7 @@ commands:
   review <run-id>                            Show the run artifact for review
   approve <run-id> [--launch]                 Approve and compile tasks
   status [<run-id>]                          Show run status
+  report <run-id> <task-id> --from <path>    Import a completion report JSON for a task
   verify <run-id> <task-id>                  Run deterministic verification
   tasks <run-id> [--status X] [--json]       Query tasks with filters
   ready <run-id> [--json]                    Show dispatchable tasks
@@ -263,6 +267,75 @@ func cmdStatus(_ context.Context, args []string) error {
 		}
 	}
 
+	return nil
+}
+
+func cmdReport(args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("usage: attest report <run-id> <task-id> --from <path>")
+	}
+
+	runID := args[0]
+	taskID := args[1]
+	var fromPath string
+	for i := 2; i < len(args); i++ {
+		if args[i] == "--from" && i+1 < len(args) {
+			fromPath = args[i+1]
+			i++
+		}
+	}
+	if fromPath == "" {
+		return fmt.Errorf("usage: attest report <run-id> <task-id> --from <path>")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+	found := false
+	for i := range tasks {
+		if tasks[i].TaskID == taskID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+
+	var report state.CompletionReport
+	if err := state.ReadJSON(fromPath, &report); err != nil {
+		return fmt.Errorf("read completion report: %w", err)
+	}
+	if report.TaskID == "" {
+		report.TaskID = taskID
+	}
+	if report.TaskID != taskID {
+		return fmt.Errorf("completion report task_id %q does not match %q", report.TaskID, taskID)
+	}
+	if report.AttemptID == "" {
+		report.AttemptID = "manual-report"
+	}
+
+	reportPath := filepath.Join(runDir.ReportDir(taskID), "completion-report.json")
+	if err := state.WriteJSON(reportPath, &report); err != nil {
+		return fmt.Errorf("write completion report: %w", err)
+	}
+	_ = runDir.AppendEvent(state.Event{
+		Timestamp: time.Now(),
+		Type:      "completion_report_recorded",
+		RunID:     runID,
+		TaskID:    taskID,
+		Detail:    fmt.Sprintf("attempt=%s", report.AttemptID),
+	})
+
+	fmt.Printf("Completion report recorded: %s\n", reportPath)
 	return nil
 }
 

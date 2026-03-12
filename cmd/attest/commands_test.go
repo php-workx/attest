@@ -129,6 +129,70 @@ func TestCmdVerifyPrintsFailureDetails(t *testing.T) {
 	assertContains(t, output, "missing required evidence: test_pass")
 }
 
+func TestCmdReportImportsCompletionReportAndVerifyPasses(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	task := newTask("task-at-fr-001", "Implement AT-FR-001", state.TaskPending)
+	task.RequirementIDs = []string{"AT-FR-001"}
+	task.RequiredEvidence = []string{"file_exists"}
+
+	writeRunFixture(t, baseDir, "run-report", runFixture{
+		artifact: &state.RunArtifact{
+			SchemaVersion: "0.1",
+			RunID:         "run-report",
+			Requirements: []state.Requirement{
+				{ID: "AT-FR-001", Text: "The system must ingest specs."},
+			},
+		},
+		status: &state.RunStatus{
+			RunID:              "run-report",
+			State:              state.RunRunning,
+			LastTransitionTime: time.Date(2026, time.March, 12, 9, 0, 0, 0, time.UTC),
+			TaskCountsByState:  map[string]int{"pending": 1},
+		},
+		tasks: []state.Task{task},
+	})
+
+	reportFile := filepath.Join(baseDir, "completion-report.json")
+	report := state.CompletionReport{
+		TaskID:            task.TaskID,
+		AttemptID:         "attempt-report",
+		ArtifactsProduced: []string{"coverage.out"},
+	}
+	reportBytes, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal(report): %v", err)
+	}
+	if err := os.WriteFile(reportFile, reportBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile(report): %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := cmdReport([]string{"run-report", task.TaskID, "--from", reportFile}); err != nil {
+			t.Fatalf("cmdReport: %v", err)
+		}
+	})
+	assertContains(t, output, "Completion report recorded")
+
+	runDir := state.NewRunDir(baseDir, "run-report")
+	var persisted state.CompletionReport
+	if err := state.ReadJSON(filepath.Join(runDir.ReportDir(task.TaskID), "completion-report.json"), &persisted); err != nil {
+		t.Fatalf("ReadJSON(persisted report): %v", err)
+	}
+	if persisted.AttemptID != "attempt-report" {
+		t.Fatalf("persisted attempt id = %q, want attempt-report", persisted.AttemptID)
+	}
+
+	verifyOutput := captureStdout(t, func() {
+		if err := cmdVerify(context.Background(), []string{"run-report", task.TaskID}); err != nil {
+			t.Fatalf("cmdVerify: %v", err)
+		}
+	})
+	assertContains(t, verifyOutput, `"pass": true`)
+	assertContains(t, verifyOutput, "Verification: PASS")
+}
+
 func TestCmdPrepareCreatesRunArtifacts(t *testing.T) {
 	baseDir := t.TempDir()
 	withWorkingDir(t, baseDir)
