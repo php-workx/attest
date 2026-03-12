@@ -4,7 +4,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/runger/attest/internal/compiler"
@@ -71,9 +73,10 @@ func (e *Engine) Prepare(ctx context.Context, specPaths []string) (*state.RunArt
 	// Write initial status.
 	status := &state.RunStatus{
 		RunID:              runID,
-		State:              state.RunPreparing,
+		State:              state.RunAwaitingApproval,
 		LastTransitionTime: time.Now(),
 		TaskCountsByState:  map[string]int{},
+		CurrentGate:        "awaiting_approval",
 	}
 	if err := e.RunDir.WriteStatus(status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
@@ -83,7 +86,7 @@ func (e *Engine) Prepare(ctx context.Context, specPaths []string) (*state.RunArt
 		Timestamp: time.Now(),
 		Type:      "run_state_transition",
 		RunID:     runID,
-		Detail:    "preparing",
+		Detail:    "awaiting_approval",
 	})
 
 	return artifact, nil
@@ -117,6 +120,10 @@ func (e *Engine) Approve(ctx context.Context) error {
 		RunID:     artifact.RunID,
 		Detail:    "approved",
 	})
+
+	if err := e.refreshRunStatus(state.RunApproved, "approved", nil); err != nil {
+		return fmt.Errorf("refresh status: %w", err)
+	}
 
 	return nil
 }
@@ -154,6 +161,10 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 		Detail:    fmt.Sprintf("compiled %d tasks covering %d requirements", len(result.Tasks), len(result.Coverage)),
 	})
 
+	if err := e.refreshRunStatus(state.RunRunning, "dispatch_ready", nil); err != nil {
+		return nil, fmt.Errorf("refresh status: %w", err)
+	}
+
 	return result, nil
 }
 
@@ -182,6 +193,18 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 		TaskID:    task.TaskID,
 		Detail:    fmt.Sprintf("pass=%v findings=%d", result.Pass, len(result.BlockingFindings)),
 	})
+
+	nextState := state.RunRunning
+	var blockers []string
+	if !result.Pass {
+		nextState = state.RunBlocked
+		for _, finding := range result.BlockingFindings {
+			blockers = append(blockers, fmt.Sprintf("%s: %s", task.TaskID, finding.Summary))
+		}
+	}
+	if err := e.refreshRunStatus(nextState, "verification", blockers); err != nil {
+		return nil, fmt.Errorf("refresh status: %w", err)
+	}
 
 	return result, nil
 }
@@ -239,4 +262,63 @@ func (e *Engine) GetPendingTasks() ([]state.Task, error) {
 		}
 	}
 	return pending, nil
+}
+
+func (e *Engine) refreshRunStatus(nextState state.RunState, currentGate string, openBlockers []string) error {
+	status, err := e.RunDir.ReadStatus()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		status = &state.RunStatus{
+			RunID:             filepathBase(e.RunDir.Root),
+			TaskCountsByState: map[string]int{},
+		}
+	}
+
+	status.State = nextState
+	status.CurrentGate = currentGate
+	status.OpenBlockers = openBlockers
+	status.LastTransitionTime = time.Now()
+	status.TaskCountsByState = map[string]int{}
+	status.TaskDetails = nil
+
+	if tasks, err := e.RunDir.ReadTasks(); err == nil {
+		for i := range tasks {
+			status.TaskCountsByState[string(tasks[i].Status)]++
+			if tasks[i].StatusReason == "" {
+				continue
+			}
+			status.TaskDetails = append(status.TaskDetails, state.TaskDetail{
+				TaskID:                 tasks[i].TaskID,
+				CurrentGate:            currentGate,
+				BlockingFindingSummary: tasks[i].StatusReason,
+				HumanInputRequired:     tasks[i].Status == state.TaskBlocked,
+			})
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if coverage, err := e.RunDir.ReadCoverage(); err == nil {
+		status.UncoveredRequirementCount = 0
+		for _, item := range coverage {
+			if len(item.CoveringTaskIDs) == 0 && !item.Deferred {
+				status.UncoveredRequirementCount++
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return e.RunDir.WriteStatus(status)
+}
+
+func filepathBase(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == os.PathSeparator {
+			return path[i+1:]
+		}
+	}
+	return path
 }

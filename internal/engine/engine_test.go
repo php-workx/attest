@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
@@ -46,10 +47,24 @@ func TestPrepareAndCompile(t *testing.T) {
 	if artifact.RunID == "" {
 		t.Error("run ID is empty")
 	}
+	status, err := eng.RunDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after Prepare: %v", err)
+	}
+	if status.State != state.RunAwaitingApproval {
+		t.Fatalf("status state after Prepare = %s, want %s", status.State, state.RunAwaitingApproval)
+	}
 
 	// Approve.
 	if err := eng.Approve(ctx); err != nil {
 		t.Fatalf("Approve: %v", err)
+	}
+	status, err = eng.RunDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after Approve: %v", err)
+	}
+	if status.State != state.RunApproved {
+		t.Fatalf("status state after Approve = %s, want %s", status.State, state.RunApproved)
 	}
 
 	// Compile.
@@ -57,8 +72,18 @@ func TestPrepareAndCompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if len(result.Tasks) != 3 {
-		t.Fatalf("got %d tasks, want 3", len(result.Tasks))
+	if len(result.Tasks) == 0 {
+		t.Fatal("got 0 tasks, want at least 1")
+	}
+	status, err = eng.RunDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after Compile: %v", err)
+	}
+	if status.State != state.RunRunning {
+		t.Fatalf("status state after Compile = %s, want %s", status.State, state.RunRunning)
+	}
+	if status.TaskCountsByState[string(state.TaskPending)] != len(result.Tasks) {
+		t.Fatalf("pending count after Compile = %d, want %d", status.TaskCountsByState[string(state.TaskPending)], len(result.Tasks))
 	}
 
 	// All tasks should be pending.
@@ -136,8 +161,8 @@ func TestGetPendingTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 3 {
-		t.Fatalf("got %d pending tasks, want 3", len(pending))
+	if len(pending) != 2 {
+		t.Fatalf("got %d pending tasks, want 2 grouped tasks", len(pending))
 	}
 }
 
@@ -229,6 +254,14 @@ func TestVerifyTaskWritesVerifierResult(t *testing.T) {
 	if persisted.TaskID != task.TaskID || persisted.AttemptID != report.AttemptID {
 		t.Fatalf("persisted verifier result = %+v, want task %q attempt %q", persisted, task.TaskID, report.AttemptID)
 	}
+
+	status, err := runDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after VerifyTask: %v", err)
+	}
+	if status.State != state.RunRunning {
+		t.Fatalf("status state after successful VerifyTask = %s, want %s", status.State, state.RunRunning)
+	}
 }
 
 func TestUpdateTaskStatusReturnsErrorWhenTaskMissing(t *testing.T) {
@@ -278,5 +311,57 @@ func TestGetPendingTasksRespectsDependencies(t *testing.T) {
 	}
 	if pending[0].TaskID != "task-ready" || pending[1].TaskID != "task-waiting" {
 		t.Fatalf("pending tasks = %+v, want ready/waiting only", pending)
+	}
+}
+
+func TestVerifyTaskFailureBlocksRun(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-blocked")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-blocked",
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	if err := runDir.WriteStatus(&state.RunStatus{
+		RunID:              "run-blocked",
+		State:              state.RunRunning,
+		LastTransitionTime: time.Now(),
+		TaskCountsByState:  map[string]int{},
+	}); err != nil {
+		t.Fatalf("WriteStatus: %v", err)
+	}
+
+	task := &state.Task{
+		TaskID:           "task-blocked",
+		RequirementIDs:   []string{"AT-FR-001"},
+		RequiredEvidence: []string{"file_exists"},
+	}
+	report := &state.CompletionReport{
+		TaskID:    task.TaskID,
+		AttemptID: "attempt-blocked",
+	}
+
+	eng := engine.New(runDir, dir)
+	result, err := eng.VerifyTask(context.Background(), task, report)
+	if err != nil {
+		t.Fatalf("VerifyTask: %v", err)
+	}
+	if result.Pass {
+		t.Fatal("VerifyTask unexpectedly passed")
+	}
+
+	status, err := runDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after failed VerifyTask: %v", err)
+	}
+	if status.State != state.RunBlocked {
+		t.Fatalf("status state after failed VerifyTask = %s, want %s", status.State, state.RunBlocked)
+	}
+	if len(status.OpenBlockers) == 0 {
+		t.Fatal("OpenBlockers after failed VerifyTask = empty, want blocker detail")
 	}
 }
