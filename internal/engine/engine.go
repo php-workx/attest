@@ -12,6 +12,8 @@ import (
 	"github.com/runger/attest/internal/verifier"
 )
 
+const errReadArtifact = "read artifact: %w"
+
 // Engine is the Phase 1 run engine (spec section 18.3).
 // Serial execution, foreground, no council, no detached mode.
 type Engine struct {
@@ -91,7 +93,7 @@ func (e *Engine) Prepare(ctx context.Context, specPaths []string) (*state.RunArt
 func (e *Engine) Approve(ctx context.Context) error {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
-		return fmt.Errorf("read artifact: %w", err)
+		return fmt.Errorf(errReadArtifact, err)
 	}
 
 	// Compute artifact hash for immutability enforcement (spec section 3.2).
@@ -123,7 +125,7 @@ func (e *Engine) Approve(ctx context.Context) error {
 func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
-		return nil, fmt.Errorf("read artifact: %w", err)
+		return nil, fmt.Errorf(errReadArtifact, err)
 	}
 
 	result, err := compiler.Compile(artifact)
@@ -159,7 +161,7 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state.CompletionReport) (*state.VerifierResult, error) {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
-		return nil, fmt.Errorf("read artifact: %w", err)
+		return nil, fmt.Errorf(errReadArtifact, err)
 	}
 
 	result, err := verifier.Verify(ctx, task, report, artifact.QualityGate, e.WorkDir)

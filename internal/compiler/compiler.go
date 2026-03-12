@@ -132,16 +132,10 @@ func classifyRisk(req state.Requirement) string {
 	}
 }
 
-func defaultModel(req state.Requirement) string {
-	id := req.ID
-	switch {
-	case strings.HasPrefix(id, "AT-TS-"):
-		return "sonnet"
-	case strings.HasPrefix(id, "AT-FR-"):
-		return "sonnet"
-	default:
-		return "sonnet"
-	}
+func defaultModel(_ state.Requirement) string {
+	// v1 routes all implementation tasks to Sonnet (spec section 10.1).
+	// Routing differentiation is a later-phase concern.
+	return "sonnet"
 }
 
 // slugFromID produces a short human-readable slug from a requirement ID (spec section 3.4).

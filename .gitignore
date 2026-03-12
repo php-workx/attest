@@ -21,6 +21,13 @@ coverage.html
 # OS
 .DS_Store
 
+# Secrets
+.env
+
+# SonarQube working directory
+.sonarqube/
+.scannerwork/
+
 # attest runtime state
 .attest/
 

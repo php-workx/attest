@@ -10,6 +10,8 @@ import (
 	"github.com/runger/attest/internal/state"
 )
 
+const errReadTasks = "read tasks: %w"
+
 // taskFilter holds parsed filter flags for task queries (spec section 5.2).
 type taskFilter struct {
 	status        string
@@ -83,40 +85,38 @@ func parseTaskFilter(args []string) (string, taskFilter, []string) {
 	return runID, f, remaining
 }
 
+func (f taskFilter) matches(t state.Task, doneStates map[string]state.TaskStatus) bool {
+	if f.status != "" && string(t.Status) != f.status {
+		return false
+	}
+	if f.taskType != "" && t.TaskType != f.taskType {
+		return false
+	}
+	if f.tag != "" && !containsTag(t.Tags, f.tag) {
+		return false
+	}
+	if f.requirementID != "" && !containsStr(t.RequirementIDs, f.requirementID) {
+		return false
+	}
+	if f.priority > 0 && t.Priority != f.priority {
+		return false
+	}
+	if f.ready && (t.Status != state.TaskPending || !depsReady(t, doneStates)) {
+		return false
+	}
+	if f.blocked && t.Status != state.TaskBlocked {
+		return false
+	}
+	return true
+}
+
 func filterTasks(tasks []state.Task, f taskFilter, doneStates map[string]state.TaskStatus) []state.Task {
 	var result []state.Task
 	for _, t := range tasks {
-		if f.status != "" && string(t.Status) != f.status {
-			continue
+		if f.matches(t, doneStates) {
+			result = append(result, t)
 		}
-		if f.taskType != "" && t.TaskType != f.taskType {
-			continue
-		}
-		if f.tag != "" && !containsTag(t.Tags, f.tag) {
-			continue
-		}
-		if f.requirementID != "" && !containsStr(t.RequirementIDs, f.requirementID) {
-			continue
-		}
-		if f.priority > 0 && t.Priority != f.priority {
-			continue
-		}
-		if f.ready {
-			if t.Status != state.TaskPending {
-				continue
-			}
-			if !depsReady(t, doneStates) {
-				continue
-			}
-		}
-		if f.blocked {
-			if t.Status != state.TaskBlocked {
-				continue
-			}
-		}
-		result = append(result, t)
 	}
-
 	if f.limit > 0 && len(result) > f.limit {
 		result = result[:f.limit]
 	}
@@ -189,7 +189,7 @@ func cmdTasks(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -219,7 +219,7 @@ func cmdReady(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -261,7 +261,7 @@ func cmdBlocked(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -307,7 +307,7 @@ func cmdNext(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -376,7 +376,7 @@ func cmdProgress(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	// Count by task state.

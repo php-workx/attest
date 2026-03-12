@@ -12,8 +12,8 @@ default:
 # Run all quality checks: vet, lint, format, test (the quality gate)
 check: vet lint fmt test
 
-# Run full dev suite: quality gate + vulnerability scan + roam
-dev: check vuln roam
+# Run full dev suite: quality gate + vulnerability scan + roam + sonar
+dev: check vuln roam sonar
     @echo "All checks passed!"
 
 # Build the attest binary with version info
@@ -56,6 +56,14 @@ roam:
         roam index && roam fitness && roam pr-risk main..HEAD; \
     else \
         echo "roam not installed, skipping roam checks"; \
+    fi
+
+# Run SonarQube scan (requires SONAR_TOKEN in .env and local SonarQube on localhost:9000)
+sonar:
+    @if command -v sonar-scanner >/dev/null 2>&1 && [ -f .env ]; then \
+        . ./.env && SONAR_TOKEN="$$SONAR_TOKEN" sonar-scanner; \
+    else \
+        echo "sonar-scanner not installed or .env missing, skipping"; \
     fi
 
 # Format all Go files in-place
