@@ -32,6 +32,16 @@ func main() {
 		err = cmdStatus(ctx, os.Args[2:])
 	case "verify":
 		err = cmdVerify(ctx, os.Args[2:])
+	case "tasks":
+		err = cmdTasks(os.Args[2:])
+	case "ready":
+		err = cmdReady(os.Args[2:])
+	case "blocked":
+		err = cmdBlocked(os.Args[2:])
+	case "next":
+		err = cmdNext(os.Args[2:])
+	case "progress":
+		err = cmdProgress(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		usage()
@@ -52,7 +62,12 @@ commands:
   review <run-id>                            Show the run artifact for review
   approve <run-id>                           Approve and compile tasks
   status [<run-id>]                          Show run status
-  verify <run-id> <task-id>                  Run deterministic verification`)
+  verify <run-id> <task-id>                  Run deterministic verification
+  tasks <run-id> [--status X] [--json]       Query tasks with filters
+  ready <run-id> [--json]                    Show dispatchable tasks
+  blocked <run-id> [--json]                  Show blocked tasks
+  next <run-id> [--json]                     Show next task to work on
+  progress <run-id> [--json]                 Show run progress`)
 }
 
 func workDir() (string, error) {

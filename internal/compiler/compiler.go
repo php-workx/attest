@@ -1,9 +1,11 @@
 package compiler
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/runger/attest/internal/state"
 )
@@ -36,12 +38,23 @@ func Compile(artifact *state.RunArtifact) (*CompileResult, error) {
 	tasks := make([]state.Task, 0, len(reqs))
 	coverageMap := make(map[string]*state.RequirementCoverage)
 
+	// Use a fixed compilation time for determinism within one Compile call.
+	now := time.Now().Truncate(time.Second)
+
 	for i, req := range reqs {
 		taskID := taskIDFromRequirement(req.ID)
+		title := fmt.Sprintf("Implement %s", req.ID)
 
 		task := state.Task{
 			TaskID:         taskID,
-			Title:          fmt.Sprintf("Implement %s", req.ID),
+			Slug:           slugFromID(req.ID),
+			Title:          title,
+			TaskType:       "implementation",
+			Tags:           tagsFromRequirement(req),
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			Order:          i + 1,
+			LineageID:      taskID,
 			RequirementIDs: []string{req.ID},
 			DependsOn:      []string{},
 			Scope: state.TaskScope{
@@ -54,6 +67,7 @@ func Compile(artifact *state.RunArtifact) (*CompileResult, error) {
 			Status:           state.TaskPending,
 			RequiredEvidence: inferEvidence(req),
 		}
+		task.ETag = computeETag(task)
 		tasks = append(tasks, task)
 
 		if _, exists := coverageMap[req.ID]; !exists {
@@ -128,6 +142,37 @@ func defaultModel(req state.Requirement) string {
 	default:
 		return "sonnet"
 	}
+}
+
+// slugFromID produces a short human-readable slug from a requirement ID (spec section 3.4).
+func slugFromID(reqID string) string {
+	return strings.ToLower(strings.ReplaceAll(reqID, "-", "_"))
+}
+
+// tagsFromRequirement derives normalized lowercase tags from a requirement (spec section 3.4).
+func tagsFromRequirement(req state.Requirement) []string {
+	var tags []string
+	prefix := strings.SplitN(req.ID, "-", 3)
+	if len(prefix) >= 2 {
+		tags = append(tags, strings.ToLower(prefix[0]+"-"+prefix[1]))
+	}
+	risk := classifyRisk(req)
+	if risk == "high" {
+		tags = append(tags, "high-risk")
+	}
+	return tags
+}
+
+// computeETag produces a content hash for compare-and-swap consistency (spec section 3.4).
+func computeETag(task state.Task) string {
+	// Zero out volatile fields before hashing.
+	task.ETag = ""
+	task.UpdatedAt = time.Time{}
+	data, err := json.Marshal(task)
+	if err != nil {
+		return ""
+	}
+	return state.SHA256Bytes(data)[:16]
 }
 
 func inferEvidence(req state.Requirement) []string {

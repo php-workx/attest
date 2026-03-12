@@ -1,0 +1,433 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/runger/attest/internal/state"
+)
+
+// taskFilter holds parsed filter flags for task queries (spec section 5.2).
+type taskFilter struct {
+	status        string
+	taskType      string
+	priority      int
+	tag           string
+	requirementID string
+	wave          string
+	limit         int
+	ready         bool
+	blocked       bool
+	jsonOutput    bool
+}
+
+func parseTaskFilter(args []string) (string, taskFilter, []string) {
+	var runID string
+	var f taskFilter
+	var remaining []string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--status":
+			if i+1 < len(args) {
+				f.status = args[i+1]
+				i++
+			}
+		case "--task-type":
+			if i+1 < len(args) {
+				f.taskType = args[i+1]
+				i++
+			}
+		case "--tag":
+			if i+1 < len(args) {
+				f.tag = args[i+1]
+				i++
+			}
+		case "--requirement-id":
+			if i+1 < len(args) {
+				f.requirementID = args[i+1]
+				i++
+			}
+		case "--wave":
+			if i+1 < len(args) {
+				f.wave = args[i+1]
+				i++
+			}
+		case "--limit":
+			if i+1 < len(args) {
+				_, _ = fmt.Sscanf(args[i+1], "%d", &f.limit)
+				i++
+			}
+		case "--priority":
+			if i+1 < len(args) {
+				_, _ = fmt.Sscanf(args[i+1], "%d", &f.priority)
+				i++
+			}
+		case "--ready":
+			f.ready = true
+		case "--blocked":
+			f.blocked = true
+		case "--json":
+			f.jsonOutput = true
+		default:
+			if runID == "" {
+				runID = args[i]
+			} else {
+				remaining = append(remaining, args[i])
+			}
+		}
+	}
+	return runID, f, remaining
+}
+
+func filterTasks(tasks []state.Task, f taskFilter, doneStates map[string]state.TaskStatus) []state.Task {
+	var result []state.Task
+	for _, t := range tasks {
+		if f.status != "" && string(t.Status) != f.status {
+			continue
+		}
+		if f.taskType != "" && t.TaskType != f.taskType {
+			continue
+		}
+		if f.tag != "" && !containsTag(t.Tags, f.tag) {
+			continue
+		}
+		if f.requirementID != "" && !containsStr(t.RequirementIDs, f.requirementID) {
+			continue
+		}
+		if f.priority > 0 && t.Priority != f.priority {
+			continue
+		}
+		if f.ready {
+			if t.Status != state.TaskPending {
+				continue
+			}
+			if !depsReady(t, doneStates) {
+				continue
+			}
+		}
+		if f.blocked {
+			if t.Status != state.TaskBlocked {
+				continue
+			}
+		}
+		result = append(result, t)
+	}
+
+	if f.limit > 0 && len(result) > f.limit {
+		result = result[:f.limit]
+	}
+	return result
+}
+
+func depsReady(t state.Task, taskStates map[string]state.TaskStatus) bool {
+	for _, dep := range t.DependsOn {
+		if taskStates[dep] != state.TaskDone {
+			return false
+		}
+	}
+	return true
+}
+
+func buildTaskStates(tasks []state.Task) map[string]state.TaskStatus {
+	m := make(map[string]state.TaskStatus, len(tasks))
+	for _, t := range tasks {
+		m[t.TaskID] = t.Status
+	}
+	return m
+}
+
+func containsTag(tags []string, tag string) bool {
+	for _, t := range tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func outputTasks(tasks []state.Task, jsonOutput bool) {
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(tasks)
+		return
+	}
+
+	for _, t := range tasks {
+		fmt.Printf("  [%s] %-12s %s (reqs: %s) etag:%s\n",
+			t.Status, t.Slug, t.Title,
+			strings.Join(t.RequirementIDs, ","),
+			t.ETag[:8])
+	}
+}
+
+// cmdTasks implements `attest tasks` (spec section 5.2).
+func cmdTasks(args []string) error {
+	runID, f, _ := parseTaskFilter(args)
+	if runID == "" {
+		return fmt.Errorf("usage: attest tasks <run-id> [--status X] [--task-type X] [--tag X] [--json]")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	taskStates := buildTaskStates(tasks)
+	filtered := filterTasks(tasks, f, taskStates)
+
+	if f.jsonOutput {
+		outputTasks(filtered, true)
+	} else {
+		fmt.Printf("Tasks (%d of %d):\n", len(filtered), len(tasks))
+		outputTasks(filtered, false)
+	}
+	return nil
+}
+
+// cmdReady implements `attest ready` (spec section 5.2).
+func cmdReady(args []string) error {
+	runID, f, _ := parseTaskFilter(args)
+	if runID == "" {
+		return fmt.Errorf("usage: attest ready <run-id> [--json]")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	taskStates := buildTaskStates(tasks)
+	f.ready = true
+	ready := filterTasks(tasks, f, taskStates)
+
+	// Sort by priority, then order, then task_id (spec section 5.2).
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].Priority != ready[j].Priority {
+			return ready[i].Priority < ready[j].Priority
+		}
+		if ready[i].Order != ready[j].Order {
+			return ready[i].Order < ready[j].Order
+		}
+		return ready[i].TaskID < ready[j].TaskID
+	})
+
+	if f.jsonOutput {
+		outputTasks(ready, true)
+	} else {
+		fmt.Printf("Ready tasks (%d):\n", len(ready))
+		outputTasks(ready, false)
+	}
+	return nil
+}
+
+// cmdBlocked implements `attest blocked` (spec section 5.2).
+func cmdBlocked(args []string) error {
+	runID, f, _ := parseTaskFilter(args)
+	if runID == "" {
+		return fmt.Errorf("usage: attest blocked <run-id> [--json]")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	taskStates := buildTaskStates(tasks)
+	f.blocked = true
+	blocked := filterTasks(tasks, f, taskStates)
+
+	if f.jsonOutput {
+		outputTasks(blocked, true)
+	} else {
+		if len(blocked) == 0 {
+			fmt.Println("No blocked tasks.")
+			return nil
+		}
+		// Group by reason (spec section 5.2).
+		byReason := make(map[string][]state.Task)
+		for _, t := range blocked {
+			reason := t.StatusReason
+			if reason == "" {
+				reason = "(no reason recorded)"
+			}
+			byReason[reason] = append(byReason[reason], t)
+		}
+		for reason, tasks := range byReason {
+			fmt.Printf("Blocked: %s (%d tasks)\n", reason, len(tasks))
+			outputTasks(tasks, false)
+		}
+	}
+	return nil
+}
+
+// cmdNext implements `attest next` (spec section 5.2).
+func cmdNext(args []string) error {
+	runID, f, _ := parseTaskFilter(args)
+	if runID == "" {
+		return fmt.Errorf("usage: attest next <run-id> [--json]")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	taskStates := buildTaskStates(tasks)
+
+	// Find ready tasks sorted by priority.
+	var ready []state.Task
+	for _, t := range tasks {
+		if t.Status == state.TaskPending && depsReady(t, taskStates) {
+			ready = append(ready, t)
+		}
+	}
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].Priority != ready[j].Priority {
+			return ready[i].Priority < ready[j].Priority
+		}
+		return ready[i].Order < ready[j].Order
+	})
+
+	if len(ready) > 0 {
+		if f.jsonOutput {
+			outputTasks(ready[:1], true)
+		} else {
+			fmt.Println("Next task:")
+			outputTasks(ready[:1], false)
+		}
+		return nil
+	}
+
+	// No ready task — point to highest-impact blocker (spec section 5.2).
+	var blocked []state.Task
+	for _, t := range tasks {
+		if t.Status == state.TaskBlocked {
+			blocked = append(blocked, t)
+		}
+	}
+	if len(blocked) > 0 {
+		sort.Slice(blocked, func(i, j int) bool {
+			return blocked[i].Priority < blocked[j].Priority
+		})
+		if f.jsonOutput {
+			outputTasks(blocked[:1], true)
+		} else {
+			fmt.Println("No ready tasks. Highest-impact blocker:")
+			outputTasks(blocked[:1], false)
+			fmt.Printf("  Reason: %s\n", blocked[0].StatusReason)
+		}
+		return nil
+	}
+
+	fmt.Println("No ready or blocked tasks.")
+	return nil
+}
+
+// cmdProgress implements `attest progress` (spec section 5.2).
+func cmdProgress(args []string) error {
+	runID, f, _ := parseTaskFilter(args)
+	if runID == "" {
+		return fmt.Errorf("usage: attest progress <run-id> [--json]")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	// Count by task state.
+	counts := make(map[string]int)
+	for _, t := range tasks {
+		counts[string(t.Status)]++
+	}
+
+	// Requirement coverage.
+	var covCounts map[string]int
+	coverage, err := runDir.ReadCoverage()
+	if err == nil {
+		covCounts = make(map[string]int)
+		for _, c := range coverage {
+			covCounts[c.Status]++
+		}
+	}
+
+	// Completion percentage.
+	total := len(tasks)
+	done := counts["done"]
+	pct := 0
+	if total > 0 {
+		pct = done * 100 / total
+	}
+
+	if f.jsonOutput {
+		out := map[string]any{
+			"total_tasks":        total,
+			"task_counts":        counts,
+			"completion_percent": pct,
+		}
+		if covCounts != nil {
+			out["requirement_coverage"] = covCounts
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return nil
+	}
+
+	fmt.Printf("Progress: %d%% (%d/%d tasks done)\n\n", pct, done, total)
+	fmt.Println("Tasks by state:")
+	for st, count := range counts {
+		fmt.Printf("  %-16s %d\n", st, count)
+	}
+	if covCounts != nil {
+		fmt.Println("\nRequirement coverage:")
+		for st, count := range covCounts {
+			fmt.Printf("  %-16s %d\n", st, count)
+		}
+	}
+	return nil
+}

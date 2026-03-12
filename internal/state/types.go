@@ -61,7 +61,15 @@ type QualityGate struct {
 // Task is a single work item in the task graph (spec section 3.4).
 type Task struct {
 	TaskID           string     `json:"task_id"`
+	Slug             string     `json:"slug"`
 	Title            string     `json:"title"`
+	TaskType         string     `json:"task_type"` // implementation, repair, review_followup, clarification_followup
+	Tags             []string   `json:"tags"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	Order            int        `json:"order"`
+	ETag             string     `json:"etag"`
+	LineageID        string     `json:"lineage_id"`
 	RequirementIDs   []string   `json:"requirement_ids"`
 	DependsOn        []string   `json:"depends_on"`
 	Scope            TaskScope  `json:"scope"`
