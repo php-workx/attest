@@ -70,6 +70,11 @@ sonar:
 format:
     gofumpt --extra -w .
 
+# Set up git hooks and development environment
+setup: install-dev
+    git config core.hooksPath .githooks
+    @echo "Git hooks configured (.githooks/)"
+
 # Install required development tools
 install-dev:
     @echo "Installing Go tools..."

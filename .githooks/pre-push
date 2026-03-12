@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Pre-push: full quality gate (vet + lint + fmt + test with race)
+just check
