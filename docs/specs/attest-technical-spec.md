@@ -1,6 +1,6 @@
 # attest Technical Specification
 
-Version: 0.2
+Version: 0.3
 Status: Draft (post-review revision)
 Audience: Engineering
 Document type: Technical specification / build specification
@@ -954,15 +954,38 @@ Gemini review is mandatory for every task closure attempt.
 
 ### 9.4 CrewAI decision
 
-CrewAI is not the core runtime in v1, but it is a valid candidate library for selected orchestration concerns if it reduces implementation risk.
+CrewAI is not used in v1.
+
+v1 uses direct Go-native orchestration in `internal/councilflow` for reviewer fan-out, synthesis sequencing, and council result assembly. This decision was finalized during Phase 1 implementation.
+
+Reasons:
+
+- Go-native orchestration preserves full control over canonical `.attest/` run state, closure rules, and engine lifecycle
+- the councilflow package is small enough that a framework adds dependency risk without reducing implementation complexity
+- subprocess management for Claude, Codex, and Gemini backends is straightforward in Go and does not benefit from CrewAI's agent abstractions
+
+### 9.5 Roam structural intelligence layer
+
+Roam (`roam-code`) is a structural intelligence engine that pre-indexes codebases into a semantic graph (SQLite). It provides dependency-aware context queries, blast-radius analysis, call-graph traversal, and anti-pattern detection via CLI or MCP server.
+
+Roam is an optional enhancement in v1. When present, it provides semantic analysis that improves several pipeline stages beyond what path-based heuristics can achieve. When absent, the engine falls back to path-based scope enforcement and file-list-based worker context.
+
+v1 integration points:
+
+- **Task compilation**: query the Roam graph to derive `owned_paths`, `read_only_paths`, and `shared_paths` from actual code dependencies instead of heuristic path assignment
+- **Worker input bundles**: use Roam context queries to produce bounded, structural context (definition + callers + callees + affected tests) instead of raw file dumps, respecting the context budget requirement in section 11.4
+- **Wave planning**: check semantic disjointness through subgraph independence rather than path-prefix overlap, enabling more aggressive parallel dispatch when code is decoupled
+- **Verification**: detect structural regressions where a changed function's callers or dependents were not updated, complementing the path-based scope check in section 11.3
+- **Cross-task regression detection**: upgrade the path-based check in section 11.6 to semantic dependency overlap when the graph is available
+- **Quality evidence**: use Roam's anti-pattern detection (algorithmic complexity, code smells) and health scoring as additional verifier evidence checks, catching structural quality issues before council review
 
 v1 policy:
 
-- evaluate CrewAI first for optional internal orchestration layers such as review-flow wiring or structured council execution
-- do not let CrewAI own the canonical `.attest/` run state, task graph, approval boundary, or engine lifecycle
-- any CrewAI integration must remain behind `attest` commands so the user experience stays CLI-native
-
-If CrewAI cannot preserve those constraints cleanly, prefer direct local orchestration in Go.
+- detect Roam availability during `attest prepare` or `attest launch` preflight, similar to quality gate detection
+- if Roam is available, run `roam index` during preflight and store the graph path in the run artifact
+- if Roam is not available, warn the operator and proceed with path-based fallback for all affected pipeline stages
+- Roam must not own or mutate canonical `.attest/` run state
+- Roam queries must be treated as advisory input to the engine's own decisions, not as authoritative overrides of the spec's scope and closure rules
 
 ## 10. Model routing policy
 
@@ -1521,7 +1544,7 @@ Throughout all phases:
 
 These decisions should be finalized during implementation planning, not left implicit:
 
-- whether CrewAI is adopted for any internal orchestration layer, and if so, exactly which layer
+- whether Roam is adopted for structural intelligence, and if so, which pipeline stages use it first
 - exact CLI flag surface and config layout
 - run directory location override support
 - whether stop supports graceful-only behavior or also force-stop behavior in v1
