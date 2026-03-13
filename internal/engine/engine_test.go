@@ -259,8 +259,8 @@ func TestVerifyTaskWritesVerifierResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadStatus after VerifyTask: %v", err)
 	}
-	if status.State != state.RunRunning {
-		t.Fatalf("status state after successful VerifyTask = %s, want %s", status.State, state.RunRunning)
+	if status.State != state.RunCompleted {
+		t.Fatalf("status state after successful VerifyTask = %s, want %s", status.State, state.RunCompleted)
 	}
 
 	tasks, err := runDir.ReadTasks()
@@ -269,6 +269,81 @@ func TestVerifyTaskWritesVerifierResult(t *testing.T) {
 	}
 	if len(tasks) != 1 || tasks[0].Status != state.TaskDone {
 		t.Fatalf("task status after successful VerifyTask = %+v, want done", tasks)
+	}
+}
+
+func TestVerifyTaskSatisfiesCoverageAndCompletesRun(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-complete")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-complete",
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	if err := runDir.WriteTasks([]state.Task{{
+		TaskID:           "task-complete",
+		Status:           state.TaskPending,
+		RequirementIDs:   []string{"AT-FR-001"},
+		RequiredEvidence: []string{"quality_gate_pass"},
+	}}); err != nil {
+		t.Fatalf("WriteTasks: %v", err)
+	}
+	if err := runDir.WriteCoverage([]state.RequirementCoverage{{
+		RequirementID:   "AT-FR-001",
+		Status:          "in_progress",
+		CoveringTaskIDs: []string{"task-complete"},
+	}}); err != nil {
+		t.Fatalf("WriteCoverage: %v", err)
+	}
+	if err := runDir.WriteStatus(&state.RunStatus{
+		RunID:              "run-complete",
+		State:              state.RunRunning,
+		LastTransitionTime: time.Now(),
+		TaskCountsByState:  map[string]int{"pending": 1},
+	}); err != nil {
+		t.Fatalf("WriteStatus: %v", err)
+	}
+
+	task := &state.Task{
+		TaskID:           "task-complete",
+		RequirementIDs:   []string{"AT-FR-001"},
+		RequiredEvidence: []string{"quality_gate_pass"},
+	}
+	report := &state.CompletionReport{
+		TaskID:    task.TaskID,
+		AttemptID: "attempt-complete",
+	}
+
+	eng := engine.New(runDir, dir)
+	result, err := eng.VerifyTask(context.Background(), task, report)
+	if err != nil {
+		t.Fatalf("VerifyTask: %v", err)
+	}
+	if !result.Pass {
+		t.Fatalf("VerifyTask pass = false, findings = %+v", result.BlockingFindings)
+	}
+
+	coverage, err := runDir.ReadCoverage()
+	if err != nil {
+		t.Fatalf("ReadCoverage after VerifyTask: %v", err)
+	}
+	if len(coverage) != 1 || coverage[0].Status != "satisfied" {
+		t.Fatalf("coverage after successful VerifyTask = %+v, want satisfied", coverage)
+	}
+
+	status, err := runDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after VerifyTask: %v", err)
+	}
+	if status.State != state.RunCompleted {
+		t.Fatalf("status state after successful VerifyTask = %s, want %s", status.State, state.RunCompleted)
+	}
+	if status.CurrentGate != "completed" {
+		t.Fatalf("current gate after successful VerifyTask = %q, want completed", status.CurrentGate)
 	}
 }
 
@@ -342,6 +417,13 @@ func TestVerifyTaskFailureBlocksRun(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("WriteTasks: %v", err)
 	}
+	if err := runDir.WriteCoverage([]state.RequirementCoverage{{
+		RequirementID:   "AT-FR-001",
+		Status:          "in_progress",
+		CoveringTaskIDs: []string{"task-blocked"},
+	}}); err != nil {
+		t.Fatalf("WriteCoverage: %v", err)
+	}
 	if err := runDir.WriteStatus(&state.RunStatus{
 		RunID:              "run-blocked",
 		State:              state.RunRunning,
@@ -387,5 +469,77 @@ func TestVerifyTaskFailureBlocksRun(t *testing.T) {
 	}
 	if len(tasks) != 1 || tasks[0].Status != state.TaskBlocked {
 		t.Fatalf("task status after failed VerifyTask = %+v, want blocked", tasks)
+	}
+
+	coverage, err := runDir.ReadCoverage()
+	if err != nil {
+		t.Fatalf("ReadCoverage after failed VerifyTask: %v", err)
+	}
+	if len(coverage) != 1 || coverage[0].Status != "blocked" {
+		t.Fatalf("coverage after failed VerifyTask = %+v, want blocked", coverage)
+	}
+}
+
+func TestRetryTaskRequeuesBlockedTaskAndRestoresCoverage(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-retry")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteTasks([]state.Task{{
+		TaskID:         "task-retry",
+		Status:         state.TaskBlocked,
+		StatusReason:   "missing evidence",
+		RequirementIDs: []string{"AT-FR-001"},
+	}}); err != nil {
+		t.Fatalf("WriteTasks: %v", err)
+	}
+	if err := runDir.WriteCoverage([]state.RequirementCoverage{{
+		RequirementID:   "AT-FR-001",
+		Status:          "blocked",
+		CoveringTaskIDs: []string{"task-retry"},
+	}}); err != nil {
+		t.Fatalf("WriteCoverage: %v", err)
+	}
+	if err := runDir.WriteStatus(&state.RunStatus{
+		RunID:              "run-retry",
+		State:              state.RunBlocked,
+		LastTransitionTime: time.Now(),
+		TaskCountsByState:  map[string]int{"blocked": 1},
+		OpenBlockers:       []string{"task-retry: missing evidence"},
+	}); err != nil {
+		t.Fatalf("WriteStatus: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	if err := eng.RetryTask("task-retry"); err != nil {
+		t.Fatalf("RetryTask: %v", err)
+	}
+
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		t.Fatalf("ReadTasks after RetryTask: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != state.TaskPending || tasks[0].StatusReason != "" {
+		t.Fatalf("task after RetryTask = %+v, want pending with cleared reason", tasks)
+	}
+
+	coverage, err := runDir.ReadCoverage()
+	if err != nil {
+		t.Fatalf("ReadCoverage after RetryTask: %v", err)
+	}
+	if len(coverage) != 1 || coverage[0].Status != "in_progress" {
+		t.Fatalf("coverage after RetryTask = %+v, want in_progress", coverage)
+	}
+
+	status, err := runDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus after RetryTask: %v", err)
+	}
+	if status.State != state.RunRunning {
+		t.Fatalf("status state after RetryTask = %s, want %s", status.State, state.RunRunning)
+	}
+	if len(status.OpenBlockers) != 0 {
+		t.Fatalf("OpenBlockers after RetryTask = %+v, want empty", status.OpenBlockers)
 	}
 }

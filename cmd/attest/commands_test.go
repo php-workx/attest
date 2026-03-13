@@ -152,6 +152,9 @@ func TestCmdReportImportsCompletionReportAndVerifyPasses(t *testing.T) {
 			TaskCountsByState:  map[string]int{"pending": 1},
 		},
 		tasks: []state.Task{task},
+		coverage: []state.RequirementCoverage{
+			{RequirementID: "AT-FR-001", Status: "in_progress", CoveringTaskIDs: []string{task.TaskID}},
+		},
 	})
 
 	reportFile := filepath.Join(baseDir, "completion-report.json")
@@ -207,6 +210,14 @@ func TestCmdReportImportsCompletionReportAndVerifyPasses(t *testing.T) {
 	})
 	assertContains(t, progressOutput, `"completion_percent": 100`)
 	assertContains(t, progressOutput, `"done": 1`)
+	assertContains(t, progressOutput, `"satisfied": 1`)
+
+	statusOutput := captureStdout(t, func() {
+		if err := cmdStatus(context.Background(), []string{"run-report"}); err != nil {
+			t.Fatalf("cmdStatus: %v", err)
+		}
+	})
+	assertContains(t, statusOutput, "State: completed")
 }
 
 func TestCmdPrepareCreatesRunArtifacts(t *testing.T) {
@@ -376,6 +387,68 @@ func TestCmdProgressReturnsJSONSummary(t *testing.T) {
 	}
 	if summary.RequirementCoverage["blocked"] != 1 {
 		t.Fatalf("unexpected requirement coverage: %+v", summary.RequirementCoverage)
+	}
+}
+
+func TestCmdRetryRequeuesBlockedTask(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	writeRunFixture(t, baseDir, "run-retry", runFixture{
+		status: &state.RunStatus{
+			RunID:              "run-retry",
+			State:              state.RunBlocked,
+			LastTransitionTime: time.Date(2026, time.March, 12, 11, 0, 0, 0, time.UTC),
+			TaskCountsByState:  map[string]int{"blocked": 1},
+			OpenBlockers:       []string{"task-blocked: missing evidence"},
+		},
+		tasks: []state.Task{
+			newTask("task-blocked", "Blocked task", state.TaskBlocked),
+		},
+		coverage: []state.RequirementCoverage{
+			{RequirementID: "AT-FR-001", Status: "blocked", CoveringTaskIDs: []string{"task-blocked"}},
+		},
+	})
+
+	runDir := state.NewRunDir(baseDir, "run-retry")
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		t.Fatalf("ReadTasks(before retry): %v", err)
+	}
+	tasks[0].StatusReason = "missing evidence"
+	if err := runDir.WriteTasks(tasks); err != nil {
+		t.Fatalf("WriteTasks(before retry): %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := cmdRetry([]string{"run-retry", "task-blocked"}); err != nil {
+			t.Fatalf("cmdRetry: %v", err)
+		}
+	})
+	assertContains(t, output, "Task requeued: task-blocked")
+
+	tasks, err = runDir.ReadTasks()
+	if err != nil {
+		t.Fatalf("ReadTasks(after retry): %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != state.TaskPending || tasks[0].StatusReason != "" {
+		t.Fatalf("task after retry = %+v, want pending with cleared reason", tasks)
+	}
+
+	coverage, err := runDir.ReadCoverage()
+	if err != nil {
+		t.Fatalf("ReadCoverage(after retry): %v", err)
+	}
+	if len(coverage) != 1 || coverage[0].Status != "in_progress" {
+		t.Fatalf("coverage after retry = %+v, want in_progress", coverage)
+	}
+
+	status, err := runDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus(after retry): %v", err)
+	}
+	if status.State != state.RunRunning {
+		t.Fatalf("run state after retry = %s, want %s", status.State, state.RunRunning)
 	}
 }
 

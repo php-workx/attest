@@ -39,6 +39,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		err = cmdReport(args[1:])
 	case "verify":
 		err = cmdVerify(ctx, args[1:])
+	case "retry":
+		err = cmdRetry(args[1:])
 	case "tasks":
 		err = cmdTasks(args[1:])
 	case "ready":
@@ -73,6 +75,7 @@ commands:
   status [<run-id>]                          Show run status
   report <run-id> <task-id> --from <path>    Import a completion report JSON for a task
   verify <run-id> <task-id>                  Run deterministic verification
+  retry <run-id> <task-id>                   Requeue a blocked task for another attempt
   tasks <run-id> [--status X] [--json]       Query tasks with filters
   ready <run-id> [--json]                    Show dispatchable tasks
   blocked <run-id> [--json]                  Show blocked tasks
@@ -398,6 +401,29 @@ func cmdVerify(ctx context.Context, args []string) error {
 		}
 	}
 
+	return nil
+}
+
+func cmdRetry(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: attest retry <run-id> <task-id>")
+	}
+
+	runID := args[0]
+	taskID := args[1]
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+	if err := eng.RetryTask(taskID); err != nil {
+		return err
+	}
+
+	fmt.Printf("Task requeued: %s\n", taskID)
 	return nil
 }
 
