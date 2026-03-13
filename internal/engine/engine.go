@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/runger/attest/internal/compiler"
@@ -186,6 +187,16 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 		return nil, fmt.Errorf("write verifier result: %w", err)
 	}
 
+	taskStatus := state.TaskDone
+	statusReason := ""
+	if !result.Pass {
+		taskStatus = state.TaskBlocked
+		statusReason = summarizeFindings(result.BlockingFindings)
+	}
+	if err := e.persistVerifiedTask(task, taskStatus, statusReason); err != nil {
+		return nil, fmt.Errorf("persist task verification outcome: %w", err)
+	}
+
 	_ = e.RunDir.AppendEvent(state.Event{
 		Timestamp: time.Now(),
 		Type:      "verifier_completed",
@@ -321,4 +332,53 @@ func filepathBase(path string) string {
 		}
 	}
 	return path
+}
+
+func (e *Engine) persistVerifiedTask(task *state.Task, status state.TaskStatus, reason string) error {
+	tasks, err := e.RunDir.ReadTasks()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read tasks: %w", err)
+		}
+		tasks = []state.Task{*task}
+	}
+
+	found := false
+	for i := range tasks {
+		if tasks[i].TaskID != task.TaskID {
+			continue
+		}
+		tasks[i].Status = status
+		tasks[i].StatusReason = reason
+		tasks[i].UpdatedAt = time.Now()
+		found = true
+		break
+	}
+	if !found {
+		verifiedTask := *task
+		verifiedTask.Status = status
+		verifiedTask.StatusReason = reason
+		verifiedTask.UpdatedAt = time.Now()
+		tasks = append(tasks, verifiedTask)
+	}
+
+	if err := e.RunDir.WriteTasks(tasks); err != nil {
+		return fmt.Errorf("write tasks: %w", err)
+	}
+	return nil
+}
+
+func summarizeFindings(findings []state.Finding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		if finding.Summary == "" {
+			continue
+		}
+		parts = append(parts, finding.Summary)
+	}
+	return strings.Join(parts, "; ")
 }

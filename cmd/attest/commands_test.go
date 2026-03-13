@@ -191,6 +191,22 @@ func TestCmdReportImportsCompletionReportAndVerifyPasses(t *testing.T) {
 	})
 	assertContains(t, verifyOutput, `"pass": true`)
 	assertContains(t, verifyOutput, "Verification: PASS")
+
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		t.Fatalf("ReadTasks(after verify): %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != state.TaskDone {
+		t.Fatalf("task status after verify = %+v, want done", tasks)
+	}
+
+	progressOutput := captureStdout(t, func() {
+		if err := cmdProgress([]string{"run-report", "--json"}); err != nil {
+			t.Fatalf("cmdProgress: %v", err)
+		}
+	})
+	assertContains(t, progressOutput, `"completion_percent": 100`)
+	assertContains(t, progressOutput, `"done": 1`)
 }
 
 func TestCmdPrepareCreatesRunArtifacts(t *testing.T) {

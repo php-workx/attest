@@ -262,6 +262,14 @@ func TestVerifyTaskWritesVerifierResult(t *testing.T) {
 	if status.State != state.RunRunning {
 		t.Fatalf("status state after successful VerifyTask = %s, want %s", status.State, state.RunRunning)
 	}
+
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		t.Fatalf("ReadTasks after VerifyTask: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != state.TaskDone {
+		t.Fatalf("task status after successful VerifyTask = %+v, want done", tasks)
+	}
 }
 
 func TestUpdateTaskStatusReturnsErrorWhenTaskMissing(t *testing.T) {
@@ -326,6 +334,14 @@ func TestVerifyTaskFailureBlocksRun(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteArtifact: %v", err)
 	}
+	if err := runDir.WriteTasks([]state.Task{{
+		TaskID:           "task-blocked",
+		Status:           state.TaskPending,
+		RequirementIDs:   []string{"AT-FR-001"},
+		RequiredEvidence: []string{"file_exists"},
+	}}); err != nil {
+		t.Fatalf("WriteTasks: %v", err)
+	}
 	if err := runDir.WriteStatus(&state.RunStatus{
 		RunID:              "run-blocked",
 		State:              state.RunRunning,
@@ -363,5 +379,13 @@ func TestVerifyTaskFailureBlocksRun(t *testing.T) {
 	}
 	if len(status.OpenBlockers) == 0 {
 		t.Fatal("OpenBlockers after failed VerifyTask = empty, want blocker detail")
+	}
+
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		t.Fatalf("ReadTasks after failed VerifyTask: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Status != state.TaskBlocked {
+		t.Fatalf("task status after failed VerifyTask = %+v, want blocked", tasks)
 	}
 }
