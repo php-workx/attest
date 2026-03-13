@@ -14,6 +14,11 @@ import (
 	"github.com/runger/attest/internal/state"
 )
 
+const (
+	commandReview  = "review"
+	commandApprove = "approve"
+)
+
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stderr))
 }
@@ -29,9 +34,13 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	switch args[0] {
 	case "prepare":
 		err = cmdPrepare(ctx, args[1:])
-	case "review":
+	case commandReview:
 		err = cmdReview(ctx, args[1:])
-	case "approve":
+	case "tech-spec":
+		err = cmdTechSpec(ctx, args[1:])
+	case "plan":
+		err = cmdPlan(ctx, args[1:])
+	case commandApprove:
 		err = cmdApprove(ctx, args[1:])
 	case "status":
 		err = cmdStatus(ctx, args[1:])
@@ -71,6 +80,8 @@ func usage(w io.Writer) {
 commands:
   prepare --spec <path> [--spec <path>...]   Ingest specs and create a draft run
   review <run-id>                            Show the run artifact for review
+  tech-spec <draft|review|approve> ...       Manage run-scoped technical specs
+  plan <draft|review|approve> ...            Manage run-scoped execution plans
   approve <run-id> [--launch]                 Approve and compile tasks
   status [<run-id>]                          Show run status
   report <run-id> <task-id> --from <path>    Import a completion report JSON for a task
@@ -171,6 +182,106 @@ func cmdReview(_ context.Context, args []string) error {
 	return nil
 }
 
+func cmdTechSpec(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
+	}
+
+	action := args[0]
+	runID := args[1]
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+
+	switch action {
+	case "draft":
+		fromPath := ""
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--from" && i+1 < len(args) {
+				fromPath = args[i+1]
+				i++
+			}
+		}
+		if fromPath == "" {
+			fromPath, err = detectTechnicalSpecSource(wd)
+			if err != nil {
+				return err
+			}
+		}
+		if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
+			return err
+		}
+		fmt.Printf("Technical spec recorded: %s\n", runDir.TechnicalSpec())
+		return nil
+	case commandReview:
+		review, err := eng.ReviewTechnicalSpec(ctx)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(review, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case commandApprove:
+		approval, err := eng.ApproveTechnicalSpec(ctx, "user")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Technical spec approved: %s (%s)\n", approval.ArtifactPath, approval.ArtifactHash)
+		return nil
+	default:
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
+	}
+}
+
+func cmdPlan(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: attest plan <draft|review|approve> <run-id>")
+	}
+
+	action := args[0]
+	runID := args[1]
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+
+	switch action {
+	case "draft":
+		plan, err := eng.DraftExecutionPlan(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Execution plan recorded: %s (%d slices)\n", runDir.ExecutionPlan(), len(plan.Slices))
+		return nil
+	case commandReview:
+		review, err := eng.ReviewExecutionPlan(ctx)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(review, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case commandApprove:
+		approval, err := eng.ApproveExecutionPlan(ctx, "user")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Execution plan approved: %s (%s)\n", approval.ArtifactPath, approval.ArtifactHash)
+		return nil
+	default:
+		return fmt.Errorf("usage: attest plan <draft|review|approve> <run-id>")
+	}
+}
+
 func cmdApprove(ctx context.Context, args []string) error {
 	var runID string
 	var launch bool
@@ -241,7 +352,8 @@ func cmdStatus(_ context.Context, args []string) error {
 				continue
 			}
 			runDir := state.NewRunDir(wd, e.Name())
-			status, err := runDir.ReadStatus()
+			eng := engine.New(runDir, wd)
+			status, err := eng.ReconcileRunStatus()
 			if err != nil {
 				fmt.Printf("  %s (status unreadable)\n", e.Name())
 				continue
@@ -253,8 +365,8 @@ func cmdStatus(_ context.Context, args []string) error {
 
 	runID := args[0]
 	runDir := state.NewRunDir(wd, runID)
-
-	status, err := runDir.ReadStatus()
+	eng := engine.New(runDir, wd)
+	status, err := eng.ReconcileRunStatus()
 	if err != nil {
 		return fmt.Errorf("read status: %w", err)
 	}
@@ -438,4 +550,18 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func detectTechnicalSpecSource(workDir string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(workDir, "docs", "specs", "*technical-spec*.md"))
+	if err != nil {
+		return "", fmt.Errorf("find technical spec source: %w", err)
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no technical spec source found; pass --from <path>")
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("multiple technical spec sources found; pass --from <path>")
+	}
+	return matches[0], nil
 }

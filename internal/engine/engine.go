@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -271,6 +272,42 @@ func (e *Engine) RetryTask(taskID string) error {
 	return nil
 }
 
+// ReconcileRunStatus repairs stale run-status.json from canonical task/artifact state.
+func (e *Engine) ReconcileRunStatus() (*state.RunStatus, error) {
+	status, err := e.RunDir.ReadStatus()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read status: %w", err)
+		}
+		status = &state.RunStatus{
+			RunID:             filepathBase(e.RunDir.Root),
+			TaskCountsByState: map[string]int{},
+		}
+	}
+
+	artifact, err := e.RunDir.ReadArtifact()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf(errReadArtifact, err)
+	}
+
+	tasks, err := e.RunDir.ReadTasks()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read tasks: %w", err)
+	}
+
+	inferred := inferredRunStatus(status, artifact, tasks)
+	if !inferred.ok {
+		return status, nil
+	}
+	if !statusNeedsRefresh(status, inferred.state, inferred.gate, inferred.blockers, tasks) {
+		return status, nil
+	}
+	if err := e.refreshRunStatus(inferred.state, inferred.gate, inferred.blockers); err != nil {
+		return nil, fmt.Errorf("refresh status: %w", err)
+	}
+	return e.RunDir.ReadStatus()
+}
+
 // UpdateTaskStatus updates a task's status in tasks.json (single-writer rule, spec section 4.1).
 func (e *Engine) UpdateTaskStatus(taskID string, newStatus state.TaskStatus, reason string) error {
 	tasks, err := e.RunDir.ReadTasks()
@@ -447,6 +484,89 @@ func summarizeFindings(findings []state.Finding) string {
 		parts = append(parts, finding.Summary)
 	}
 	return strings.Join(parts, "; ")
+}
+
+type inferredStatus struct {
+	state    state.RunState
+	gate     string
+	blockers []string
+	ok       bool
+}
+
+func inferredRunStatus(current *state.RunStatus, artifact *state.RunArtifact, tasks []state.Task) inferredStatus {
+	if len(tasks) > 0 {
+		blockers := blockedTaskSummaries(tasks)
+		if len(blockers) > 0 {
+			return inferredStatus{state: state.RunBlocked, gate: "verification", blockers: blockers, ok: true}
+		}
+		if allTasksDone(tasks) {
+			return inferredStatus{state: state.RunCompleted, gate: "completed", ok: true}
+		}
+		return inferredStatus{state: state.RunRunning, gate: "dispatch_ready", ok: true}
+	}
+
+	if artifact != nil {
+		if artifact.ApprovedAt != nil {
+			return inferredStatus{state: state.RunApproved, gate: "approved", ok: true}
+		}
+		return inferredStatus{state: state.RunAwaitingApproval, gate: "awaiting_approval", ok: true}
+	}
+
+	if current != nil && current.State != "" {
+		return inferredStatus{state: current.State, gate: current.CurrentGate, blockers: current.OpenBlockers}
+	}
+
+	return inferredStatus{state: state.RunPreparing, gate: "preparing", ok: true}
+}
+
+func statusNeedsRefresh(current *state.RunStatus, nextState state.RunState, gate string, blockers []string, tasks []state.Task) bool {
+	if current == nil {
+		return true
+	}
+	if current.State != nextState || current.CurrentGate != gate || !slices.Equal(current.OpenBlockers, blockers) {
+		return true
+	}
+
+	expectedCounts := make(map[string]int)
+	for i := range tasks {
+		expectedCounts[string(tasks[i].Status)]++
+	}
+	if len(expectedCounts) != len(current.TaskCountsByState) {
+		return true
+	}
+	for k, v := range expectedCounts {
+		if current.TaskCountsByState[k] != v {
+			return true
+		}
+	}
+	return false
+}
+
+func blockedTaskSummaries(tasks []state.Task) []string {
+	var blockers []string
+	for i := range tasks {
+		if tasks[i].Status != state.TaskBlocked {
+			continue
+		}
+		summary := tasks[i].StatusReason
+		if summary == "" {
+			summary = "task is blocked"
+		}
+		blockers = append(blockers, fmt.Sprintf("%s: %s", tasks[i].TaskID, summary))
+	}
+	return blockers
+}
+
+func allTasksDone(tasks []state.Task) bool {
+	if len(tasks) == 0 {
+		return false
+	}
+	for i := range tasks {
+		if tasks[i].Status != state.TaskDone {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) syncCoverageFromTasks() error {

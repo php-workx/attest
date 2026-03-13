@@ -137,7 +137,7 @@ func requirementLess(left, right state.Requirement) bool {
 }
 
 func groupRequirements(reqs []state.Requirement) [][]state.Requirement {
-	const maxGroupSize = 6
+	const maxGroupSize = 4
 
 	var groups [][]state.Requirement
 	for _, req := range reqs {
@@ -160,6 +160,9 @@ func shouldStartNewGroup(current []state.Requirement, next state.Requirement, ma
 		return true
 	}
 	if laneForRequirement(last) != laneForRequirement(next) {
+		return true
+	}
+	if groupingTheme(last) != groupingTheme(next) {
 		return true
 	}
 	if last.SourceLine > 0 && next.SourceLine > 0 && next.SourceLine-last.SourceLine > 3 {
@@ -395,4 +398,29 @@ func requirementFamily(reqID string) string {
 		return parts[0] + "-" + parts[1]
 	}
 	return reqID
+}
+
+func groupingTheme(req state.Requirement) string {
+	text := strings.ToLower(req.Text)
+
+	switch {
+	case containsAny(text, "session", "reattach", "resume", "continues after", "later session"):
+		return "persistence"
+	case containsAny(text, "codex", "gemini", "opus", "council", "review", "reviewer", "synthesis"):
+		return "review"
+	case containsAny(text, "verify", "verification", "evidence", "repair"):
+		return "verification"
+	case containsAny(text, "finish", "finishes", "explicitly blocked", "closure"):
+		return "completion"
+	case containsAny(text, "task graph", "compile", "deterministic"):
+		return "planning"
+	case containsAny(text, "approval", "approved", "source of truth"):
+		return "approval"
+	case containsAny(text, "scope metadata", "overlapping", "owning", "concurrently", "serialize", "split"):
+		return "concurrency"
+	case containsAny(text, "ingest", "extract", "requirement id", "source spec", "run preparation"):
+		return "preparation"
+	default:
+		return requirementFamily(req.ID)
+	}
 }

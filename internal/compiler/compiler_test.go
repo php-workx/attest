@@ -125,9 +125,9 @@ func TestCompileEmptyRequirements(t *testing.T) {
 func TestCompileGroupsNearbyRequirements(t *testing.T) {
 	artifact := &state.RunArtifact{
 		Requirements: []state.Requirement{
-			{ID: "AT-FR-001", Text: "The system must ingest specs.", SourceSpec: "functional.md", SourceLine: 10},
-			{ID: "AT-FR-002", Text: "The system must normalize artifacts.", SourceSpec: "functional.md", SourceLine: 11},
-			{ID: "AT-FR-003", Text: "The system must support approval.", SourceSpec: "functional.md", SourceLine: 12},
+			{ID: "AT-FR-001", Text: "The system must verify command results.", SourceSpec: "functional.md", SourceLine: 10},
+			{ID: "AT-FR-002", Text: "The system must verify required evidence.", SourceSpec: "functional.md", SourceLine: 11},
+			{ID: "AT-FR-003", Text: "The system must verify requirement linkage.", SourceSpec: "functional.md", SourceLine: 12},
 		},
 	}
 
@@ -141,6 +141,32 @@ func TestCompileGroupsNearbyRequirements(t *testing.T) {
 	}
 	if len(result.Tasks[0].RequirementIDs) != 3 {
 		t.Fatalf("grouped requirement count = %d, want 3", len(result.Tasks[0].RequirementIDs))
+	}
+}
+
+func TestCompileSplitsDistinctThemesWithinSameFamily(t *testing.T) {
+	artifact := &state.RunArtifact{
+		Requirements: []state.Requirement{
+			{ID: "AT-AS-001", Text: "Given the same approved run artifact, the system produces the same initial task graph.", SourceSpec: "functional.md", SourceLine: 291},
+			{ID: "AT-AS-002", Text: "A run continues after the initiating session ends.", SourceSpec: "functional.md", SourceLine: 292},
+			{ID: "AT-AS-003", Text: "Verification failures create repair work automatically.", SourceSpec: "functional.md", SourceLine: 293},
+			{ID: "AT-AS-004", Text: "Codex or Gemini can block closure even after deterministic verification passes.", SourceSpec: "functional.md", SourceLine: 294},
+			{ID: "AT-AS-005", Text: "A run finishes only when every requirement in the approved artifact is verified or explicitly blocked.", SourceSpec: "functional.md", SourceLine: 295},
+		},
+	}
+
+	result, err := compiler.Compile(artifact)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	if len(result.Tasks) < 4 {
+		t.Fatalf("task count = %d, want at least 4 theme-split tasks", len(result.Tasks))
+	}
+	for _, task := range result.Tasks {
+		if len(task.RequirementIDs) > 2 {
+			t.Fatalf("task %s groups %d requirements, want at most 2 for mixed AT-AS slice", task.TaskID, len(task.RequirementIDs))
+		}
 	}
 }
 

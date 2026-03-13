@@ -214,6 +214,122 @@ func TestApproveWithoutArtifactFails(t *testing.T) {
 	}
 }
 
+func TestReviewTechnicalSpecAcceptsLegacyHeadings(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-techspec")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	spec := `# attest Technical Specification
+
+Status: Draft (post-review revision)
+
+## 1. Implementation decisions
+Context
+
+## 2. System architecture
+Architecture
+
+## 3. Canonical artifacts
+Artifacts
+
+## 5. CLI surface
+Interfaces
+
+## 11. Council checkpoints and verification pipeline
+Verification
+
+## 17. Acceptance scenarios
+- **AT-TS-001**: Deterministic review.
+
+## 19. Open v1 decisions
+Open questions.
+
+- every implementation task must trace to requirement IDs from this spec
+`
+	if err := runDir.WriteTechnicalSpec([]byte(spec)); err != nil {
+		t.Fatalf("WriteTechnicalSpec: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewTechnicalSpec(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewTechnicalSpec: %v", err)
+	}
+	if review.Status != state.ReviewPass {
+		t.Fatalf("review status = %s, want %s; findings = %+v", review.Status, state.ReviewPass, review.BlockingFindings)
+	}
+}
+
+func TestDraftTechnicalSpecNormalizesLegacyHeadings(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-normalize")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "legacy-technical-spec.md")
+	spec := `# attest Technical Specification
+
+Status: Draft (post-review revision)
+
+## 1. Implementation decisions
+Context
+
+## 2. System architecture
+Architecture
+
+## 3. Canonical artifacts
+Artifacts
+
+## 5. CLI surface
+Interfaces
+
+## 11. Council checkpoints and verification pipeline
+Verification
+
+## 17. Acceptance scenarios
+- **AT-TS-001**: Deterministic review.
+
+## 19. Open v1 decisions
+Open questions.
+
+- every implementation task must trace to requirement IDs from this spec
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile(source): %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	got := string(data)
+	for _, heading := range []string{
+		"## 1. Technical context",
+		"## 2. Architecture",
+		"## 3. Canonical artifacts and schemas",
+		"## 4. Interfaces",
+		"## 5. Verification",
+		"## 6. Requirement traceability",
+		"## 7. Open questions and risks",
+		"## 8. Approval",
+	} {
+		if !strings.Contains(got, heading) {
+			t.Fatalf("normalized spec missing heading %q:\n%s", heading, got)
+		}
+	}
+	if strings.Contains(got, "## 1. Implementation decisions") {
+		t.Fatalf("normalized spec kept legacy heading:\n%s", got)
+	}
+}
+
 func TestVerifyTaskWritesVerifierResult(t *testing.T) {
 	dir := t.TempDir()
 	runDir := state.NewRunDir(dir, "run-verify")

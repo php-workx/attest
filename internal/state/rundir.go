@@ -63,6 +63,27 @@ func (d *RunDir) Engine() string { return d.Path("engine.json") }
 // EngineLog returns the path to engine.log.
 func (d *RunDir) EngineLog() string { return d.Path("engine.log") }
 
+// TechnicalSpec returns the path to technical-spec.md.
+func (d *RunDir) TechnicalSpec() string { return d.Path("technical-spec.md") }
+
+// TechnicalSpecReview returns the path to technical-spec-review.json.
+func (d *RunDir) TechnicalSpecReview() string { return d.Path("technical-spec-review.json") }
+
+// TechnicalSpecApproval returns the path to technical-spec-approval.json.
+func (d *RunDir) TechnicalSpecApproval() string { return d.Path("technical-spec-approval.json") }
+
+// ExecutionPlan returns the path to execution-plan.json.
+func (d *RunDir) ExecutionPlan() string { return d.Path("execution-plan.json") }
+
+// ExecutionPlanMarkdown returns the path to execution-plan.md.
+func (d *RunDir) ExecutionPlanMarkdown() string { return d.Path("execution-plan.md") }
+
+// ExecutionPlanReview returns the path to execution-plan-review.json.
+func (d *RunDir) ExecutionPlanReview() string { return d.Path("execution-plan-review.json") }
+
+// ExecutionPlanApproval returns the path to execution-plan-approval.json.
+func (d *RunDir) ExecutionPlanApproval() string { return d.Path("execution-plan-approval.json") }
+
 // ClaimPath returns the path to a specific claim file.
 func (d *RunDir) ClaimPath(taskID string) string {
 	return filepath.Join(d.Root, "claims", taskID+".json")
@@ -137,6 +158,96 @@ func (d *RunDir) ReadStatus() (*RunStatus, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// WriteTechnicalSpec writes the technical spec markdown.
+func (d *RunDir) WriteTechnicalSpec(contents []byte) error {
+	return WriteAtomic(d.TechnicalSpec(), contents)
+}
+
+// ReadTechnicalSpec reads the technical spec markdown.
+func (d *RunDir) ReadTechnicalSpec() ([]byte, error) {
+	return os.ReadFile(d.TechnicalSpec())
+}
+
+// WriteTechnicalSpecReview writes the technical spec review atomically.
+func (d *RunDir) WriteTechnicalSpecReview(review *TechnicalSpecReview) error {
+	return WriteJSON(d.TechnicalSpecReview(), review)
+}
+
+// ReadTechnicalSpecReview reads the technical spec review.
+func (d *RunDir) ReadTechnicalSpecReview() (*TechnicalSpecReview, error) {
+	var review TechnicalSpecReview
+	if err := ReadJSON(d.TechnicalSpecReview(), &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+// WriteTechnicalSpecApproval writes the technical spec approval atomically.
+func (d *RunDir) WriteTechnicalSpecApproval(approval *ArtifactApproval) error {
+	return WriteJSON(d.TechnicalSpecApproval(), approval)
+}
+
+// ReadTechnicalSpecApproval reads the technical spec approval.
+func (d *RunDir) ReadTechnicalSpecApproval() (*ArtifactApproval, error) {
+	var approval ArtifactApproval
+	if err := ReadJSON(d.TechnicalSpecApproval(), &approval); err != nil {
+		return nil, err
+	}
+	return &approval, nil
+}
+
+// WriteExecutionPlan writes the execution plan atomically.
+func (d *RunDir) WriteExecutionPlan(plan *ExecutionPlan) error {
+	return WriteJSON(d.ExecutionPlan(), plan)
+}
+
+// WriteExecutionPlanMarkdown writes the execution plan markdown.
+func (d *RunDir) WriteExecutionPlanMarkdown(contents []byte) error {
+	return WriteAtomic(d.ExecutionPlanMarkdown(), contents)
+}
+
+// ReadExecutionPlan reads the execution plan.
+func (d *RunDir) ReadExecutionPlan() (*ExecutionPlan, error) {
+	var plan ExecutionPlan
+	if err := ReadJSON(d.ExecutionPlan(), &plan); err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
+// ReadExecutionPlanMarkdown reads the execution plan markdown.
+func (d *RunDir) ReadExecutionPlanMarkdown() ([]byte, error) {
+	return os.ReadFile(d.ExecutionPlanMarkdown())
+}
+
+// WriteExecutionPlanReview writes the execution plan review atomically.
+func (d *RunDir) WriteExecutionPlanReview(review *ExecutionPlanReview) error {
+	return WriteJSON(d.ExecutionPlanReview(), review)
+}
+
+// ReadExecutionPlanReview reads the execution plan review.
+func (d *RunDir) ReadExecutionPlanReview() (*ExecutionPlanReview, error) {
+	var review ExecutionPlanReview
+	if err := ReadJSON(d.ExecutionPlanReview(), &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+// WriteExecutionPlanApproval writes the execution plan approval atomically.
+func (d *RunDir) WriteExecutionPlanApproval(approval *ArtifactApproval) error {
+	return WriteJSON(d.ExecutionPlanApproval(), approval)
+}
+
+// ReadExecutionPlanApproval reads the execution plan approval.
+func (d *RunDir) ReadExecutionPlanApproval() (*ArtifactApproval, error) {
+	var approval ArtifactApproval
+	if err := ReadJSON(d.ExecutionPlanApproval(), &approval); err != nil {
+		return nil, err
+	}
+	return &approval, nil
 }
 
 // AppendEvent appends an event to the event log.

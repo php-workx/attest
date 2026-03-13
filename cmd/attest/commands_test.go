@@ -65,6 +65,51 @@ func TestCmdStatusListsRunsAndSingleRun(t *testing.T) {
 	})
 }
 
+func TestCmdStatusReconcilesLegacyRunStateFromTasks(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	timestamp := time.Date(2026, time.March, 13, 10, 0, 0, 0, time.UTC)
+	writeRunFixture(t, baseDir, "run-legacy", runFixture{
+		status: &state.RunStatus{
+			RunID:              "run-legacy",
+			State:              state.RunPreparing,
+			LastTransitionTime: timestamp,
+			TaskCountsByState:  map[string]int{},
+		},
+		artifact: &state.RunArtifact{
+			SchemaVersion: "0.1",
+			RunID:         "run-legacy",
+			ApprovedAt:    ptrTime(timestamp),
+			ApprovedBy:    "user",
+		},
+		tasks: []state.Task{
+			newTask("task-done", "Done task", state.TaskDone),
+			newTask("task-pending", "Pending task", state.TaskPending),
+		},
+	})
+
+	output := captureStdout(t, func() {
+		if err := cmdStatus(context.Background(), []string{"run-legacy"}); err != nil {
+			t.Fatalf("cmdStatus: %v", err)
+		}
+	})
+
+	assertContains(t, output, "Run: run-legacy")
+	assertContains(t, output, "State: running")
+	assertContains(t, output, "done: 1")
+	assertContains(t, output, "pending: 1")
+
+	runDir := state.NewRunDir(baseDir, "run-legacy")
+	status, err := runDir.ReadStatus()
+	if err != nil {
+		t.Fatalf("ReadStatus(after reconcile): %v", err)
+	}
+	if status.State != state.RunRunning {
+		t.Fatalf("status state after reconcile = %s, want %s", status.State, state.RunRunning)
+	}
+}
+
 func TestCmdReviewShowsAwaitingApproval(t *testing.T) {
 	baseDir := t.TempDir()
 	withWorkingDir(t, baseDir)
@@ -97,6 +142,260 @@ func TestCmdReviewShowsAwaitingApproval(t *testing.T) {
 	assertContains(t, output, "Status: AWAITING APPROVAL")
 	assertContains(t, output, "Next: attest approve run-review")
 	assertContains(t, output, "AT-FR-001: The system must ingest specs.")
+}
+
+func TestCmdTechSpecDraftReviewAndApprove(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	writeRunFixture(t, baseDir, "run-tech", runFixture{
+		artifact: &state.RunArtifact{
+			SchemaVersion: "0.1",
+			RunID:         "run-tech",
+			Requirements: []state.Requirement{
+				{ID: "AT-FR-001", Text: "The system must ingest specs."},
+			},
+		},
+		status: &state.RunStatus{
+			RunID:              "run-tech",
+			State:              state.RunAwaitingApproval,
+			LastTransitionTime: time.Date(2026, time.March, 13, 12, 0, 0, 0, time.UTC),
+			TaskCountsByState:  map[string]int{},
+		},
+	})
+
+	specPath := filepath.Join(baseDir, "docs", "specs", "example-technical-spec.md")
+	if err := os.MkdirAll(filepath.Dir(specPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(spec dir): %v", err)
+	}
+	specBody := `# Example Technical Specification
+
+## 1. Technical context
+Context
+
+## 2. Architecture
+Architecture
+
+## 3. Canonical artifacts and schemas
+Artifacts
+
+## 4. Interfaces
+Interfaces
+
+## 5. Verification
+Verification
+
+## 6. Requirement traceability
+Traceability
+
+## 7. Open questions and risks
+None
+
+## 8. Approval
+Pending
+`
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatalf("WriteFile(spec): %v", err)
+	}
+
+	draftOutput := captureStdout(t, func() {
+		if err := cmdTechSpec(context.Background(), []string{"draft", "run-tech", "--from", specPath}); err != nil {
+			t.Fatalf("cmdTechSpec draft: %v", err)
+		}
+	})
+	assertContains(t, draftOutput, "Technical spec recorded")
+
+	runDir := state.NewRunDir(baseDir, "run-tech")
+	data, err := os.ReadFile(runDir.TechnicalSpec())
+	if err != nil {
+		t.Fatalf("ReadFile(technical spec): %v", err)
+	}
+	if string(data) != specBody {
+		t.Fatalf("technical spec body mismatch:\n%s", data)
+	}
+
+	reviewOutput := captureStdout(t, func() {
+		if err := cmdTechSpec(context.Background(), []string{"review", "run-tech"}); err != nil {
+			t.Fatalf("cmdTechSpec review: %v", err)
+		}
+	})
+	assertContains(t, reviewOutput, `"status": "pass"`)
+
+	approveOutput := captureStdout(t, func() {
+		if err := cmdTechSpec(context.Background(), []string{"approve", "run-tech"}); err != nil {
+			t.Fatalf("cmdTechSpec approve: %v", err)
+		}
+	})
+	assertContains(t, approveOutput, "Technical spec approved")
+
+	approval, err := runDir.ReadTechnicalSpecApproval()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpecApproval: %v", err)
+	}
+	if approval.Status != state.ArtifactApproved || approval.ArtifactPath != "technical-spec.md" {
+		t.Fatalf("unexpected approval: %+v", approval)
+	}
+}
+
+func TestCmdTechSpecReviewReportsMissingSections(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	writeRunFixture(t, baseDir, "run-tech-fail", runFixture{
+		artifact: &state.RunArtifact{
+			SchemaVersion: "0.1",
+			RunID:         "run-tech-fail",
+		},
+	})
+
+	runDir := state.NewRunDir(baseDir, "run-tech-fail")
+	if err := os.WriteFile(runDir.TechnicalSpec(), []byte("# Incomplete Technical Spec\n\n## 1. Technical context\nOnly one section.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(technical spec): %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := cmdTechSpec(context.Background(), []string{"review", "run-tech-fail"}); err != nil {
+			t.Fatalf("cmdTechSpec review: %v", err)
+		}
+	})
+	assertContains(t, output, `"status": "fail"`)
+	assertContains(t, output, "missing required section")
+}
+
+func TestCmdPlanDraftReviewAndApprove(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	writeRunFixture(t, baseDir, "run-plan", runFixture{
+		artifact: &state.RunArtifact{
+			SchemaVersion: "0.1",
+			RunID:         "run-plan",
+			Requirements: []state.Requirement{
+				{ID: "AT-FR-001", Text: "The system must ingest specs."},
+				{ID: "AT-TS-001", Text: "The system must compile tasks deterministically."},
+			},
+			QualityGate: &state.QualityGate{
+				Command:        "just check",
+				TimeoutSeconds: 600,
+				Required:       true,
+			},
+		},
+		status: &state.RunStatus{
+			RunID:              "run-plan",
+			State:              state.RunAwaitingApproval,
+			LastTransitionTime: time.Date(2026, time.March, 13, 12, 0, 0, 0, time.UTC),
+			TaskCountsByState:  map[string]int{},
+		},
+	})
+
+	runDir := state.NewRunDir(baseDir, "run-plan")
+	techSpec := []byte(`# Example Technical Specification
+
+## 1. Technical context
+Context
+
+## 2. Architecture
+Architecture
+
+## 3. Canonical artifacts and schemas
+Artifacts
+
+## 4. Interfaces
+Interfaces
+
+## 5. Verification
+Verification
+
+## 6. Requirement traceability
+Traceability
+
+## 7. Open questions and risks
+None
+
+## 8. Approval
+Pending
+`)
+	if err := runDir.WriteTechnicalSpec(techSpec); err != nil {
+		t.Fatalf("WriteTechnicalSpec: %v", err)
+	}
+	if err := runDir.WriteTechnicalSpecApproval(&state.ArtifactApproval{
+		SchemaVersion: "0.1",
+		RunID:         "run-plan",
+		ArtifactType:  "technical_spec_approval",
+		ArtifactPath:  "technical-spec.md",
+		ArtifactHash:  "sha256:" + state.SHA256Bytes(techSpec),
+		Status:        state.ArtifactApproved,
+		ApprovedBy:    "tester",
+		ApprovedAt:    time.Date(2026, time.March, 13, 12, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("WriteTechnicalSpecApproval: %v", err)
+	}
+
+	draftOutput := captureStdout(t, func() {
+		if err := cmdPlan(context.Background(), []string{"draft", "run-plan"}); err != nil {
+			t.Fatalf("cmdPlan draft: %v", err)
+		}
+	})
+	assertContains(t, draftOutput, "Execution plan recorded")
+
+	plan, err := runDir.ReadExecutionPlan()
+	if err != nil {
+		t.Fatalf("ReadExecutionPlan: %v", err)
+	}
+	if plan.Status != state.ArtifactDrafted || len(plan.Slices) == 0 {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+
+	planMarkdown, err := runDir.ReadExecutionPlanMarkdown()
+	if err != nil {
+		t.Fatalf("ReadExecutionPlanMarkdown: %v", err)
+	}
+	assertContains(t, string(planMarkdown), "# Execution Plan")
+
+	reviewOutput := captureStdout(t, func() {
+		if err := cmdPlan(context.Background(), []string{"review", "run-plan"}); err != nil {
+			t.Fatalf("cmdPlan review: %v", err)
+		}
+	})
+	assertContains(t, reviewOutput, `"status": "pass"`)
+
+	approveOutput := captureStdout(t, func() {
+		if err := cmdPlan(context.Background(), []string{"approve", "run-plan"}); err != nil {
+			t.Fatalf("cmdPlan approve: %v", err)
+		}
+	})
+	assertContains(t, approveOutput, "Execution plan approved")
+
+	approval, err := runDir.ReadExecutionPlanApproval()
+	if err != nil {
+		t.Fatalf("ReadExecutionPlanApproval: %v", err)
+	}
+	if approval.Status != state.ArtifactApproved || approval.ArtifactPath != "execution-plan.json" {
+		t.Fatalf("unexpected plan approval: %+v", approval)
+	}
+}
+
+func TestCmdPlanDraftRequiresApprovedTechnicalSpec(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	writeRunFixture(t, baseDir, "run-plan-fail", runFixture{
+		artifact: &state.RunArtifact{
+			SchemaVersion: "0.1",
+			RunID:         "run-plan-fail",
+			Requirements: []state.Requirement{
+				{ID: "AT-FR-001", Text: "The system must ingest specs."},
+			},
+		},
+	})
+
+	err := cmdPlan(context.Background(), []string{"draft", "run-plan-fail"})
+	if err == nil {
+		t.Fatal("cmdPlan draft error = nil, want technical spec approval error")
+	}
+	if !strings.Contains(err.Error(), "technical spec approval") {
+		t.Fatalf("cmdPlan draft error = %q, want technical spec approval context", err)
+	}
 }
 
 func TestCmdVerifyPrintsFailureDetails(t *testing.T) {
@@ -540,6 +839,10 @@ func newTask(taskID, title string, status state.TaskStatus) state.Task {
 		Status:           status,
 		RequiredEvidence: []string{"quality_gate_pass"},
 	}
+}
+
+func ptrTime(v time.Time) *time.Time {
+	return &v
 }
 
 func withWorkingDir(t *testing.T, dir string) {
