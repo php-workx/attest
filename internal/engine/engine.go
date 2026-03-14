@@ -95,10 +95,20 @@ func (e *Engine) Prepare(ctx context.Context, specPaths []string) (*state.RunArt
 }
 
 // Approve marks the run artifact as approved and computes the artifact hash (spec section 6.2).
+// Validates that the execution plan is approved before persisting, so that a failed Compile
+// cannot leave the run in a half-approved state.
 func (e *Engine) Approve(ctx context.Context) error {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
 		return fmt.Errorf(errReadArtifact, err)
+	}
+
+	// Validate execution plan is approved before persisting run approval.
+	// This prevents state corruption: without this check, Approve would persist
+	// and a subsequent Compile failure would leave the run marked approved
+	// with no way to compile.
+	if _, err := e.readApprovedExecutionPlan(); err != nil {
+		return fmt.Errorf("cannot approve run: approved execution plan required: %w", err)
 	}
 
 	// Compute artifact hash for immutability enforcement (spec section 3.2).
@@ -140,6 +150,17 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 	plan, err := e.readApprovedExecutionPlan()
 	if err != nil {
 		return nil, err
+	}
+
+	// Validate execution plan is bound to the currently approved technical spec.
+	// A re-approved tech spec must trigger a new execution plan draft.
+	currentSpecHash, err := e.readApprovedTechnicalSpecHash()
+	if err != nil {
+		return nil, fmt.Errorf("validate tech spec lineage: %w", err)
+	}
+	if plan.SourceTechnicalSpecHash != currentSpecHash {
+		return nil, fmt.Errorf("execution plan references tech spec %s but current approved tech spec is %s; re-draft the execution plan",
+			plan.SourceTechnicalSpecHash, currentSpecHash)
 	}
 
 	result, err := compiler.CompileExecutionPlan(artifact, plan)

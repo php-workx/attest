@@ -28,8 +28,42 @@ func writeTestSpec(t *testing.T, dir string) string {
 	return spec
 }
 
+func writeApprovedTechnicalSpec(t *testing.T, runDir *state.RunDir) string {
+	t.Helper()
+
+	specContent := []byte("# Spec\n\n## 1. Technical context\nA\n\n## 2. Architecture\nB\n\n## 3. Canonical artifacts and schemas\nC\n\n## 4. Interfaces\nD\n\n## 5. Verification\nE\n\n## 6. Requirement traceability\nF\n\n## 7. Open questions and risks\nG\n\n## 8. Approval\nH\n")
+	if err := runDir.WriteTechnicalSpec(specContent); err != nil {
+		t.Fatalf("WriteTechnicalSpec: %v", err)
+	}
+	hash := "sha256:" + state.SHA256Bytes(specContent)
+	if err := runDir.WriteTechnicalSpecApproval(&state.ArtifactApproval{
+		SchemaVersion: "0.1",
+		RunID:         filepathBase(runDir.Root),
+		ArtifactType:  "technical_spec_approval",
+		ArtifactPath:  "technical-spec.md",
+		ArtifactHash:  hash,
+		Status:        state.ArtifactApproved,
+		ApprovedBy:    "tester",
+		ApprovedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteTechnicalSpecApproval: %v", err)
+	}
+	return hash
+}
+
+func filepathBase(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == os.PathSeparator {
+			return path[i+1:]
+		}
+	}
+	return path
+}
+
 func writeApprovedExecutionPlanForArtifact(t *testing.T, runDir *state.RunDir, artifact *state.RunArtifact) {
 	t.Helper()
+
+	techSpecHash := writeApprovedTechnicalSpec(t, runDir)
 
 	compiled, err := compiler.Compile(artifact)
 	if err != nil {
@@ -40,7 +74,7 @@ func writeApprovedExecutionPlanForArtifact(t *testing.T, runDir *state.RunDir, a
 		SchemaVersion:           "0.1",
 		RunID:                   artifact.RunID,
 		ArtifactType:            "execution_plan",
-		SourceTechnicalSpecHash: "sha256:technical-spec",
+		SourceTechnicalSpecHash: techSpecHash,
 		Status:                  state.ArtifactApproved,
 		GeneratedAt:             time.Now().UTC(),
 	}
@@ -117,11 +151,13 @@ func TestPrepareAndCompile(t *testing.T) {
 		t.Fatalf("status state after Prepare = %s, want %s", status.State, state.RunAwaitingApproval)
 	}
 
+	// Set up execution plan before approval (atomicity: Approve validates plan exists).
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+
 	// Approve.
 	if err := eng.Approve(ctx); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
 	status, err = eng.RunDir.ReadStatus()
 	if err != nil {
 		t.Fatalf("ReadStatus after Approve: %v", err)
@@ -173,10 +209,10 @@ func TestCompileDeterminism(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeApprovedExecutionPlanForArtifact(t, eng1.RunDir, artifact1)
 	if err := eng1.Approve(ctx); err != nil {
 		t.Fatal(err)
 	}
-	writeApprovedExecutionPlanForArtifact(t, eng1.RunDir, artifact1)
 	result1, err := eng1.Compile(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -192,10 +228,10 @@ func TestCompileDeterminism(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeApprovedExecutionPlanForArtifact(t, eng2.RunDir, artifact2)
 	if err := eng2.Approve(ctx); err != nil {
 		t.Fatal(err)
 	}
-	writeApprovedExecutionPlanForArtifact(t, eng2.RunDir, artifact2)
 	result2, err := eng2.Compile(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -227,10 +263,10 @@ func TestGetPendingTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
 	if err := eng.Approve(ctx); err != nil {
 		t.Fatal(err)
 	}
-	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
 	if _, err := eng.Compile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -259,10 +295,10 @@ func TestUpdateTaskStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
 	if err := eng.Approve(ctx); err != nil {
 		t.Fatal(err)
 	}
-	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
 	result, err := eng.Compile(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +333,7 @@ func TestApproveWithoutArtifactFails(t *testing.T) {
 	}
 }
 
-func TestCompileRequiresApprovedExecutionPlan(t *testing.T) {
+func TestApproveRequiresApprovedExecutionPlan(t *testing.T) {
 	dir := t.TempDir()
 	specPath := writeTestSpec(t, dir)
 	ctx := context.Background()
@@ -308,16 +344,23 @@ func TestCompileRequiresApprovedExecutionPlan(t *testing.T) {
 	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
 		t.Fatal(err)
 	}
-	if err := eng.Approve(ctx); err != nil {
-		t.Fatal(err)
+
+	// Approve must fail when no execution plan is approved (atomicity guard).
+	err := eng.Approve(ctx)
+	if err == nil {
+		t.Fatal("Approve() error = nil, want execution plan approval error")
+	}
+	if !strings.Contains(err.Error(), "approved execution plan required") {
+		t.Fatalf("Approve() error = %q, want 'approved execution plan required' context", err)
 	}
 
-	_, err := eng.Compile(ctx)
-	if err == nil {
-		t.Fatal("Compile() error = nil, want execution plan approval error")
+	// Verify run artifact was NOT marked as approved (no state corruption).
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatalf("ReadArtifact: %v", err)
 	}
-	if !strings.Contains(err.Error(), "execution plan approval") {
-		t.Fatalf("Compile() error = %q, want execution plan approval context", err)
+	if artifact.ApprovedAt != nil {
+		t.Fatal("run artifact was marked approved despite Approve() failure — state corruption")
 	}
 }
 
@@ -905,5 +948,257 @@ func TestRetryTaskRequeuesBlockedTaskAndRestoresCoverage(t *testing.T) {
 	}
 	if len(status.OpenBlockers) != 0 {
 		t.Fatalf("OpenBlockers after RetryTask = %+v, want empty", status.OpenBlockers)
+	}
+}
+
+func TestReviewExecutionPlanRejectsDuplicateSliceIDs(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-dup-ids")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-dup-ids",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-001", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail for duplicate slice IDs")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "duplicate_slice_id" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected duplicate_slice_id finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestReviewExecutionPlanRejectsSelfDependency(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-self-dep")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-self-dep",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, DependsOn: []string{"slice-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail for self-dependency")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "self_dependency" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected self_dependency finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestReviewExecutionPlanRejectsUnknownDependency(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-unknown-dep")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-unknown-dep",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, DependsOn: []string{"nonexistent"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail for unknown dependency")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "unknown_dependency" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected unknown_dependency finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestReviewExecutionPlanRejectsCycle(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-cycle")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-cycle",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-a", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, DependsOn: []string{"slice-b"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-b", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, DependsOn: []string{"slice-a"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail for dependency cycle")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "dependency_cycle" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected dependency_cycle finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestReviewExecutionPlanRejectsCaseCollidingIDs(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-case-collide")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-case-collide",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "Slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-001", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail for case-colliding slice IDs")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "case_colliding_slice_id" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected case_colliding_slice_id finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestCompileRejectsStaleExecutionPlan(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	artifact, err := eng.Prepare(ctx, []string{specPath})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	// Write execution plan with one tech spec hash.
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	// Now re-write the tech spec with different content, simulating a re-approval.
+	newSpec := []byte("# Changed Spec\n\n## 1. Technical context\nX\n\n## 2. Architecture\nY\n\n## 3. Canonical artifacts and schemas\nZ\n\n## 4. Interfaces\nW\n\n## 5. Verification\nV\n\n## 6. Requirement traceability\nU\n\n## 7. Open questions and risks\nT\n\n## 8. Approval\nS\n")
+	newHash := "sha256:" + state.SHA256Bytes(newSpec)
+	if err := eng.RunDir.WriteTechnicalSpec(newSpec); err != nil {
+		t.Fatalf("WriteTechnicalSpec: %v", err)
+	}
+	if err := eng.RunDir.WriteTechnicalSpecApproval(&state.ArtifactApproval{
+		SchemaVersion: "0.1",
+		RunID:         artifact.RunID,
+		ArtifactType:  "technical_spec_approval",
+		ArtifactPath:  "technical-spec.md",
+		ArtifactHash:  newHash,
+		Status:        state.ArtifactApproved,
+		ApprovedBy:    "tester",
+		ApprovedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteTechnicalSpecApproval: %v", err)
+	}
+
+	// Compile should reject because the execution plan references the old spec hash.
+	_, err = eng.Compile(ctx)
+	if err == nil {
+		t.Fatal("Compile() error = nil, want stale tech spec lineage error")
+	}
+	if !strings.Contains(err.Error(), "re-draft the execution plan") {
+		t.Fatalf("Compile() error = %q, want re-draft context", err)
 	}
 }

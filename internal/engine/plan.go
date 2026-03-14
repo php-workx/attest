@@ -104,6 +104,7 @@ func (e *Engine) ReviewExecutionPlan(ctx context.Context) (*state.ExecutionPlanR
 		})
 	}
 
+	validateSliceGraph(plan.Slices, review)
 	for i := range plan.Slices {
 		reviewSlice(&plan.Slices[i], review)
 	}
@@ -196,6 +197,134 @@ func (e *Engine) ApproveExecutionPlan(ctx context.Context, approvedBy string) (*
 	})
 
 	return approval, nil
+}
+
+// validateSliceGraph checks the execution plan's dependency graph for structural issues:
+// duplicate IDs, case-colliding IDs, unknown depends_on references, self-dependencies, and cycles.
+func validateSliceGraph(slices []state.ExecutionSlice, review *state.ExecutionPlanReview) {
+	idSet := validateSliceIDs(slices, review)
+	adj := validateSliceDeps(slices, idSet, review)
+	detectSliceCycles(slices, adj, review)
+}
+
+func validateSliceIDs(slices []state.ExecutionSlice, review *state.ExecutionPlanReview) map[string]bool {
+	idSet := make(map[string]bool, len(slices))
+	lowerSet := make(map[string]string, len(slices)) // lowercase → original
+
+	for i := range slices {
+		id := slices[i].SliceID
+		if id == "" {
+			continue // caught by reviewSlice field-presence check
+		}
+		if idSet[id] {
+			review.Status = state.ReviewFail
+			review.BlockingFindings = append(review.BlockingFindings, state.ReviewFinding{
+				FindingID:       fmt.Sprintf("epr-graph-%03d", len(review.BlockingFindings)+1),
+				Severity:        "high",
+				Category:        "duplicate_slice_id",
+				SliceID:         id,
+				Summary:         fmt.Sprintf("duplicate slice_id %q", id),
+				SuggestedRepair: "Each slice must have a unique slice_id.",
+			})
+		}
+		idSet[id] = true
+
+		lower := strings.ToLower(id)
+		if existing, collision := lowerSet[lower]; collision && existing != id {
+			review.Status = state.ReviewFail
+			review.BlockingFindings = append(review.BlockingFindings, state.ReviewFinding{
+				FindingID:       fmt.Sprintf("epr-graph-%03d", len(review.BlockingFindings)+1),
+				Severity:        "high",
+				Category:        "case_colliding_slice_id",
+				SliceID:         id,
+				Summary:         fmt.Sprintf("slice_id %q case-collides with %q", id, existing),
+				SuggestedRepair: "Slice IDs must be unique even when compared case-insensitively.",
+			})
+		}
+		lowerSet[lower] = id
+	}
+	return idSet
+}
+
+func validateSliceDeps(slices []state.ExecutionSlice, idSet map[string]bool, review *state.ExecutionPlanReview) map[string][]string {
+	adj := make(map[string][]string, len(slices))
+	for i := range slices {
+		id := slices[i].SliceID
+		for _, dep := range slices[i].DependsOn {
+			if dep == id {
+				review.Status = state.ReviewFail
+				review.BlockingFindings = append(review.BlockingFindings, state.ReviewFinding{
+					FindingID:       fmt.Sprintf("epr-graph-%03d", len(review.BlockingFindings)+1),
+					Severity:        "high",
+					Category:        "self_dependency",
+					SliceID:         id,
+					Summary:         fmt.Sprintf("slice %q depends on itself", id),
+					SuggestedRepair: "Remove the self-referencing dependency.",
+				})
+				continue
+			}
+			if !idSet[dep] {
+				review.Status = state.ReviewFail
+				review.BlockingFindings = append(review.BlockingFindings, state.ReviewFinding{
+					FindingID:       fmt.Sprintf("epr-graph-%03d", len(review.BlockingFindings)+1),
+					Severity:        "high",
+					Category:        "unknown_dependency",
+					SliceID:         id,
+					Summary:         fmt.Sprintf("slice %q depends on unknown slice %q", id, dep),
+					SuggestedRepair: "All depends_on entries must reference existing slice IDs.",
+				})
+				continue
+			}
+			adj[id] = append(adj[id], dep)
+		}
+	}
+	return adj
+}
+
+func detectSliceCycles(slices []state.ExecutionSlice, adj map[string][]string, review *state.ExecutionPlanReview) {
+	const (
+		colorWhite = 0 // unvisited
+		colorGray  = 1 // in current path
+		colorBlack = 2 // fully explored
+	)
+	color := make(map[string]int, len(slices))
+	var cycleNode string
+
+	var dfs func(node string) bool
+	dfs = func(node string) bool {
+		color[node] = colorGray
+		for _, dep := range adj[node] {
+			switch color[dep] {
+			case colorGray:
+				cycleNode = dep
+				return true
+			case colorWhite:
+				if dfs(dep) {
+					return true
+				}
+			}
+		}
+		color[node] = colorBlack
+		return false
+	}
+
+	for i := range slices {
+		id := slices[i].SliceID
+		if id != "" && color[id] == colorWhite {
+			if dfs(id) {
+				review.Status = state.ReviewFail
+				review.BlockingFindings = append(review.BlockingFindings, state.ReviewFinding{
+					FindingID:       fmt.Sprintf("epr-graph-%03d", len(review.BlockingFindings)+1),
+					Severity:        "high",
+					Category:        "dependency_cycle",
+					SliceID:         cycleNode,
+					Summary:         fmt.Sprintf("dependency cycle detected involving slice %q", cycleNode),
+					SuggestedRepair: "Break the dependency cycle so the graph is a DAG.",
+				})
+				return // one cycle finding is sufficient
+			}
+		}
+	}
 }
 
 func reviewSlice(slice *state.ExecutionSlice, review *state.ExecutionPlanReview) {

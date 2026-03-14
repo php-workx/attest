@@ -788,6 +788,25 @@ type runFixture struct {
 func writeApprovedExecutionPlanFixture(t *testing.T, runDir *state.RunDir, artifact *state.RunArtifact) {
 	t.Helper()
 
+	// Write tech spec and approval so lineage validation passes.
+	specContent := []byte("# Spec\n\n## 1. Technical context\nA\n\n## 2. Architecture\nB\n\n## 3. Canonical artifacts and schemas\nC\n\n## 4. Interfaces\nD\n\n## 5. Verification\nE\n\n## 6. Requirement traceability\nF\n\n## 7. Open questions and risks\nG\n\n## 8. Approval\nH\n")
+	if err := runDir.WriteTechnicalSpec(specContent); err != nil {
+		t.Fatalf("WriteTechnicalSpec: %v", err)
+	}
+	specHash := "sha256:" + state.SHA256Bytes(specContent)
+	if err := runDir.WriteTechnicalSpecApproval(&state.ArtifactApproval{
+		SchemaVersion: "0.1",
+		RunID:         artifact.RunID,
+		ArtifactType:  "technical_spec_approval",
+		ArtifactPath:  "technical-spec.md",
+		ArtifactHash:  specHash,
+		Status:        state.ArtifactApproved,
+		ApprovedBy:    "tester",
+		ApprovedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteTechnicalSpecApproval: %v", err)
+	}
+
 	compiled, err := compiler.Compile(artifact)
 	if err != nil {
 		t.Fatalf("compiler.Compile: %v", err)
@@ -797,7 +816,7 @@ func writeApprovedExecutionPlanFixture(t *testing.T, runDir *state.RunDir, artif
 		SchemaVersion:           "0.1",
 		RunID:                   artifact.RunID,
 		ArtifactType:            "execution_plan",
-		SourceTechnicalSpecHash: "sha256:technical-spec",
+		SourceTechnicalSpecHash: specHash,
 		Status:                  state.ArtifactApproved,
 		GeneratedAt:             time.Now().UTC(),
 	}
