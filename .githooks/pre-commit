@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
 set -e
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
 # Pre-commit: fast checks (workflow lint, vet, formatting, compile, module tidiness)
 just actionlint vet fmt build-check mod-tidy
