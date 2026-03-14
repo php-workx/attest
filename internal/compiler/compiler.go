@@ -391,13 +391,10 @@ func evidenceForGroup(group []state.Requirement) []string {
 	return evidence
 }
 
-func evidenceForSlice(slice *state.ExecutionSlice, reqs []state.Requirement) []string {
+func evidenceForSlice(_ *state.ExecutionSlice, reqs []state.Requirement) []string {
 	evidence := evidenceForGroup(reqs)
 	if len(evidence) > 0 {
 		return evidence
-	}
-	if len(slice.AcceptanceChecks) > 0 {
-		return []string{"quality_gate_pass"}
 	}
 	return []string{"quality_gate_pass"}
 }
