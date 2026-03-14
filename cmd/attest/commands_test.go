@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runger/attest/internal/compiler"
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
 )
@@ -567,6 +568,7 @@ func TestCmdApproveCompilesTasksAndLaunchNotice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
+	writeApprovedExecutionPlanFixture(t, state.NewRunDir(baseDir, artifact.RunID), artifact)
 
 	output := captureStdout(t, func() {
 		if err := cmdApprove(context.Background(), []string{artifact.RunID, "--launch"}); err != nil {
@@ -588,6 +590,31 @@ func TestCmdApproveCompilesTasksAndLaunchNotice(t *testing.T) {
 	}
 	if len(tasks[0].RequirementIDs) == 0 || tasks[0].RequirementIDs[0] != "AT-FR-001" {
 		t.Fatalf("compiled task requirements = %+v, want first requirement AT-FR-001", tasks[0].RequirementIDs)
+	}
+}
+
+func TestCmdApproveRequiresApprovedExecutionPlan(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	specPath := filepath.Join(baseDir, "spec.md")
+	if err := os.WriteFile(specPath, []byte("# Spec\n\n- **AT-FR-001**: The system must ingest specs.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(spec): %v", err)
+	}
+
+	runDir := state.NewRunDir(baseDir, "placeholder")
+	eng := engine.New(runDir, baseDir)
+	artifact, err := eng.Prepare(context.Background(), []string{specPath})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	err = cmdApprove(context.Background(), []string{artifact.RunID})
+	if err == nil {
+		t.Fatal("cmdApprove error = nil, want execution plan approval error")
+	}
+	if !strings.Contains(err.Error(), "execution plan approval") {
+		t.Fatalf("cmdApprove error = %q, want execution plan approval context", err)
 	}
 }
 
@@ -756,6 +783,67 @@ type runFixture struct {
 	artifact *state.RunArtifact
 	tasks    []state.Task
 	coverage []state.RequirementCoverage
+}
+
+func writeApprovedExecutionPlanFixture(t *testing.T, runDir *state.RunDir, artifact *state.RunArtifact) {
+	t.Helper()
+
+	compiled, err := compiler.Compile(artifact)
+	if err != nil {
+		t.Fatalf("compiler.Compile: %v", err)
+	}
+
+	plan := &state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   artifact.RunID,
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:technical-spec",
+		Status:                  state.ArtifactApproved,
+		GeneratedAt:             time.Now().UTC(),
+	}
+	for i := range compiled.Tasks {
+		task := &compiled.Tasks[i]
+		plan.Slices = append(plan.Slices, state.ExecutionSlice{
+			SliceID:            strings.TrimPrefix(task.TaskID, "task-"),
+			Title:              task.Title,
+			Goal:               task.Title,
+			RequirementIDs:     append([]string(nil), task.RequirementIDs...),
+			DependsOn:          trimTaskIDs(task.DependsOn),
+			FilesLikelyTouched: append([]string(nil), task.Scope.OwnedPaths...),
+			OwnedPaths:         append([]string(nil), task.Scope.OwnedPaths...),
+			AcceptanceChecks:   []string{"just check", "attest verify <run-id> <task-id>"},
+			Risk:               task.RiskLevel,
+			Size:               "small",
+		})
+	}
+
+	if err := runDir.WriteExecutionPlan(plan); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+	planData, err := os.ReadFile(runDir.ExecutionPlan())
+	if err != nil {
+		t.Fatalf("ReadFile(execution plan): %v", err)
+	}
+	if err := runDir.WriteExecutionPlanApproval(&state.ArtifactApproval{
+		SchemaVersion: "0.1",
+		RunID:         artifact.RunID,
+		ArtifactType:  "execution_plan_approval",
+		ArtifactPath:  "execution-plan.json",
+		ArtifactHash:  "sha256:" + state.SHA256Bytes(planData),
+		Status:        state.ArtifactApproved,
+		ApprovedBy:    "tester",
+		ApprovedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlanApproval: %v", err)
+	}
+}
+
+func trimTaskIDs(taskIDs []string) []string {
+	trimmed := make([]string, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		trimmed = append(trimmed, strings.TrimPrefix(taskID, "task-"))
+	}
+	return trimmed
 }
 
 func taskCommandFixture() runFixture {

@@ -137,7 +137,12 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 		return nil, fmt.Errorf(errReadArtifact, err)
 	}
 
-	result, err := compiler.Compile(artifact)
+	plan, err := e.readApprovedExecutionPlan()
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := compiler.CompileExecutionPlan(artifact, plan)
 	if err != nil {
 		return nil, fmt.Errorf("compile: %w", err)
 	}

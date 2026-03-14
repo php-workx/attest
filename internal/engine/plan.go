@@ -79,19 +79,18 @@ func (e *Engine) DraftExecutionPlan(ctx context.Context) (*state.ExecutionPlan, 
 func (e *Engine) ReviewExecutionPlan(ctx context.Context) (*state.ExecutionPlanReview, error) {
 	_ = ctx
 
-	plan, planHash, err := e.readExecutionPlanWithHash()
+	plan, _, err := e.readExecutionPlanWithHash()
 	if err != nil {
 		return nil, err
 	}
 
 	review := &state.ExecutionPlanReview{
-		SchemaVersion:     "0.1",
-		RunID:             plan.RunID,
-		ArtifactType:      "execution_plan_review",
-		ExecutionPlanHash: planHash,
-		Status:            state.ReviewPass,
-		Summary:           "Execution plan slices are actionable.",
-		ReviewedAt:        time.Now(),
+		SchemaVersion: "0.1",
+		RunID:         plan.RunID,
+		ArtifactType:  "execution_plan_review",
+		Status:        state.ReviewPass,
+		Summary:       "Execution plan slices are actionable.",
+		ReviewedAt:    time.Now(),
 	}
 
 	if len(plan.Slices) == 0 {
@@ -108,6 +107,11 @@ func (e *Engine) ReviewExecutionPlan(ctx context.Context) (*state.ExecutionPlanR
 	for i := range plan.Slices {
 		reviewSlice(&plan.Slices[i], review)
 	}
+	review.Reviewers = []state.ReviewSummary{{
+		ReviewerID: "deterministic",
+		Pass:       review.Status != state.ReviewFail,
+		Summary:    "Structural plan review completed.",
+	}}
 	if review.Status == state.ReviewFail {
 		review.Summary = "Execution plan has blocking structural issues."
 	}
@@ -119,6 +123,11 @@ func (e *Engine) ReviewExecutionPlan(ctx context.Context) (*state.ExecutionPlanR
 	if err := e.RunDir.WriteExecutionPlanMarkdown(renderExecutionPlanMarkdown(plan)); err != nil {
 		return nil, fmt.Errorf("update execution plan markdown: %w", err)
 	}
+	_, planHash, err := e.readExecutionPlanWithHash()
+	if err != nil {
+		return nil, err
+	}
+	review.ExecutionPlanHash = planHash
 	if err := e.RunDir.WriteExecutionPlanReview(review); err != nil {
 		return nil, fmt.Errorf("write execution plan review: %w", err)
 	}
@@ -145,9 +154,12 @@ func (e *Engine) ApproveExecutionPlan(ctx context.Context, approvedBy string) (*
 		return nil, fmt.Errorf("execution plan review is not passing")
 	}
 
-	plan, _, err := e.readExecutionPlanWithHash()
+	plan, planHash, err := e.readExecutionPlanWithHash()
 	if err != nil {
 		return nil, err
+	}
+	if review.ExecutionPlanHash != planHash {
+		return nil, fmt.Errorf("execution plan review hash does not match current artifact")
 	}
 	plan.Status = state.ArtifactApproved
 	if err := e.RunDir.WriteExecutionPlan(plan); err != nil {
@@ -230,13 +242,6 @@ func reviewSlice(slice *state.ExecutionSlice, review *state.ExecutionPlanReview)
 			WarningID: fmt.Sprintf("epr-w-%03d", len(review.Warnings)+1),
 			SliceID:   slice.SliceID,
 			Summary:   "slice is missing likely file touch points",
-		})
-	}
-	if len(review.Reviewers) == 0 {
-		review.Reviewers = append(review.Reviewers, state.ReviewSummary{
-			ReviewerID: "deterministic",
-			Pass:       review.Status != state.ReviewFail,
-			Summary:    "Structural plan review completed.",
 		})
 	}
 }
@@ -337,6 +342,29 @@ func (e *Engine) readExecutionPlanWithHash() (*state.ExecutionPlan, string, erro
 		return nil, "", fmt.Errorf("read execution plan: %w", err)
 	}
 	return plan, "sha256:" + state.SHA256Bytes(data), nil
+}
+
+func (e *Engine) readApprovedExecutionPlan() (*state.ExecutionPlan, error) {
+	approval, err := e.RunDir.ReadExecutionPlanApproval()
+	if err != nil {
+		return nil, fmt.Errorf("read execution plan approval: %w", err)
+	}
+	if approval.Status != state.ArtifactApproved {
+		return nil, fmt.Errorf("execution plan approval is not approved")
+	}
+
+	plan, planHash, err := e.readExecutionPlanWithHash()
+	if err != nil {
+		return nil, err
+	}
+	if plan.Status != state.ArtifactApproved {
+		return nil, fmt.Errorf("execution plan status is %s, want approved", plan.Status)
+	}
+	if approval.ArtifactHash != "" && approval.ArtifactHash != planHash {
+		return nil, fmt.Errorf("execution plan approval hash does not match current artifact")
+	}
+
+	return plan, nil
 }
 
 func sliceIDFromTaskID(taskID string) string {

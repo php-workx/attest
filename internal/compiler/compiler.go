@@ -103,6 +103,82 @@ func Compile(artifact *state.RunArtifact) (*CompileResult, error) {
 	}, nil
 }
 
+// CompileExecutionPlan produces a deterministic task graph from an approved execution plan.
+func CompileExecutionPlan(artifact *state.RunArtifact, plan *state.ExecutionPlan) (*CompileResult, error) {
+	if artifact == nil {
+		return nil, fmt.Errorf("nil run artifact")
+	}
+	if plan == nil {
+		return nil, fmt.Errorf("nil execution plan")
+	}
+	if len(plan.Slices) == 0 {
+		return nil, fmt.Errorf("execution plan has no slices")
+	}
+
+	requirementsByID := make(map[string]state.Requirement, len(artifact.Requirements))
+	for _, req := range artifact.Requirements {
+		requirementsByID[req.ID] = req
+	}
+
+	tasks := make([]state.Task, 0, len(plan.Slices))
+	coverageMap := make(map[string]*state.RequirementCoverage)
+	now := time.Now().Truncate(time.Second)
+
+	for i := range plan.Slices {
+		slice := &plan.Slices[i]
+		reqs, err := lookupRequirements(requirementsByID, slice.RequirementIDs)
+		if err != nil {
+			return nil, err
+		}
+
+		task := state.Task{
+			TaskID:           taskIDFromSliceID(slice.SliceID),
+			Slug:             slugFromSliceID(slice.SliceID),
+			Title:            slice.Title,
+			TaskType:         "implementation",
+			Tags:             tagsForSlice(slice, reqs),
+			CreatedAt:        now,
+			UpdatedAt:        now,
+			Order:            i + 1,
+			LineageID:        taskIDFromSliceID(slice.SliceID),
+			RequirementIDs:   append([]string(nil), slice.RequirementIDs...),
+			DependsOn:        taskIDsFromSliceIDs(slice.DependsOn),
+			Scope:            scopeForSlice(slice),
+			Priority:         i + 1,
+			RiskLevel:        riskForSlice(slice, reqs),
+			DefaultModel:     defaultModelForSlice(slice, reqs),
+			Status:           state.TaskPending,
+			RequiredEvidence: evidenceForSlice(slice, reqs),
+		}
+		task.ETag = computeETag(&task)
+		tasks = append(tasks, task)
+
+		for _, reqID := range slice.RequirementIDs {
+			if _, exists := coverageMap[reqID]; !exists {
+				coverageMap[reqID] = &state.RequirementCoverage{
+					RequirementID:   reqID,
+					Status:          "in_progress",
+					CoveringTaskIDs: []string{},
+				}
+			}
+			coverageMap[reqID].CoveringTaskIDs = append(coverageMap[reqID].CoveringTaskIDs, task.TaskID)
+		}
+	}
+
+	coverage := make([]state.RequirementCoverage, 0, len(coverageMap))
+	for _, c := range coverageMap {
+		coverage = append(coverage, *c)
+	}
+	sort.Slice(coverage, func(i, j int) bool {
+		return coverage[i].RequirementID < coverage[j].RequirementID
+	})
+
+	return &CompileResult{
+		Tasks:    tasks,
+		Coverage: coverage,
+	}, nil
+}
+
 // CheckCoverage verifies that every requirement is assigned to at least one task (spec section 7.2).
 // Returns the IDs of any unassigned requirements.
 func CheckCoverage(artifact *state.RunArtifact, coverage []state.RequirementCoverage) []string {
@@ -183,6 +259,10 @@ func taskIDForGroup(group []state.Requirement) string {
 	return "task-" + strings.ToLower(group[0].ID) + "-to-" + strings.ToLower(group[len(group)-1].ID)
 }
 
+func taskIDFromSliceID(sliceID string) string {
+	return "task-" + strings.ToLower(sliceID)
+}
+
 func titleForGroup(group []state.Requirement) string {
 	if len(group) == 1 {
 		return fmt.Sprintf("Implement %s", group[0].ID)
@@ -195,6 +275,10 @@ func slugForGroup(group []state.Requirement) string {
 		return slugFromID(group[0].ID)
 	}
 	return strings.ToLower(strings.ReplaceAll(group[0].ID+"-"+group[len(group)-1].ID, "-", "_"))
+}
+
+func slugFromSliceID(sliceID string) string {
+	return strings.ToLower(strings.ReplaceAll(sliceID, "-", "_"))
 }
 
 func requirementIDs(group []state.Requirement) []string {
@@ -306,6 +390,17 @@ func evidenceForGroup(group []state.Requirement) []string {
 	return evidence
 }
 
+func evidenceForSlice(slice *state.ExecutionSlice, reqs []state.Requirement) []string {
+	evidence := evidenceForGroup(reqs)
+	if len(evidence) > 0 {
+		return evidence
+	}
+	if len(slice.AcceptanceChecks) > 0 {
+		return []string{"quality_gate_pass"}
+	}
+	return []string{"quality_gate_pass"}
+}
+
 func inferEvidence(req state.Requirement) []string {
 	text := strings.ToLower(req.Text)
 	var evidence []string
@@ -334,12 +429,67 @@ func scopeForGroup(group []state.Requirement) state.TaskScope {
 	}
 }
 
+func scopeForSlice(slice *state.ExecutionSlice) state.TaskScope {
+	owned := append([]string(nil), slice.OwnedPaths...)
+	if len(owned) == 0 {
+		owned = []string{"internal/engine"}
+	}
+	return state.TaskScope{
+		OwnedPaths:    owned,
+		IsolationMode: "direct",
+	}
+}
+
 func joinRequirementText(group []state.Requirement) string {
 	parts := make([]string, 0, len(group))
 	for _, req := range group {
 		parts = append(parts, req.Text)
 	}
 	return strings.Join(parts, " ")
+}
+
+func lookupRequirements(requirementsByID map[string]state.Requirement, ids []string) ([]state.Requirement, error) {
+	reqs := make([]state.Requirement, 0, len(ids))
+	for _, id := range ids {
+		req, ok := requirementsByID[id]
+		if !ok {
+			return nil, fmt.Errorf("execution plan references unknown requirement %s", id)
+		}
+		reqs = append(reqs, req)
+	}
+	return reqs, nil
+}
+
+func taskIDsFromSliceIDs(sliceIDs []string) []string {
+	taskIDs := make([]string, 0, len(sliceIDs))
+	for _, sliceID := range sliceIDs {
+		taskIDs = append(taskIDs, taskIDFromSliceID(sliceID))
+	}
+	return taskIDs
+}
+
+func tagsForSlice(_ *state.ExecutionSlice, reqs []state.Requirement) []string {
+	if len(reqs) > 0 {
+		return tagsForGroup(reqs)
+	}
+	return nil
+}
+
+func riskForSlice(slice *state.ExecutionSlice, reqs []state.Requirement) string {
+	if len(reqs) > 0 {
+		return riskForGroup(reqs)
+	}
+	if slice.Risk != "" {
+		return slice.Risk
+	}
+	return riskLow
+}
+
+func defaultModelForSlice(_ *state.ExecutionSlice, reqs []state.Requirement) string {
+	if len(reqs) > 0 {
+		return defaultModelForGroup(reqs)
+	}
+	return "sonnet"
 }
 
 func inferOwnedPaths(text string) []string {

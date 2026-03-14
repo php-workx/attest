@@ -180,13 +180,17 @@ func (e *Engine) ApproveTechnicalSpec(ctx context.Context, approvedBy string) (*
 	if err != nil {
 		return nil, fmt.Errorf("read technical spec: %w", err)
 	}
+	currentHash := "sha256:" + state.SHA256Bytes(data)
+	if review.TechnicalSpecHash != currentHash {
+		return nil, fmt.Errorf("technical spec review hash does not match current artifact")
+	}
 
 	approval := &state.ArtifactApproval{
 		SchemaVersion: "0.1",
 		RunID:         filepathBase(e.RunDir.Root),
 		ArtifactType:  "technical_spec_approval",
 		ArtifactPath:  "technical-spec.md",
-		ArtifactHash:  "sha256:" + state.SHA256Bytes(data),
+		ArtifactHash:  currentHash,
 		Status:        state.ArtifactApproved,
 		ApprovedBy:    approvedBy,
 		ApprovedAt:    time.Now(),
