@@ -8,7 +8,7 @@ Companion document: [attest-functional-spec.md](./attest-functional-spec.md)
 
 ---
 
-## 1. Implementation decisions
+## 1. Technical context
 
 ### 1.1 Language and packaging
 
@@ -96,7 +96,7 @@ Meaning:
 - if any required review backend is unavailable after preflight and retry policy, the task enters `blocked`
 - there is no automatic degraded-review closure path in v1
 
-## 2. System architecture
+## 2. Architecture
 
 ### 2.1 Runtime components
 
@@ -228,7 +228,7 @@ Reattachment reads repo-local state only. It must not require transcript history
   - return a structured blocked summary when user input, re-authentication, or artifact correction is required
 - if the run is terminal, return status only and do not restart
 
-## 3. Canonical artifacts
+## 3. Canonical artifacts and schemas
 
 ### 3.1 Directory layout
 
@@ -244,6 +244,13 @@ attest/
         engine.log
         events.jsonl
         run-artifact.json
+        technical-spec.md
+        technical-spec-review.json
+        technical-spec-approval.json
+        execution-plan.json
+        execution-plan.md
+        execution-plan-review.json
+        execution-plan-approval.json
         clarifications.json
         tasks.json
         requirement-coverage.json
@@ -261,6 +268,8 @@ attest/
             logs/
               <command-id>.log
 ```
+
+Planning artifacts are optional during the transitional compiler phase, but once the spec-planning pipeline is enabled they become the canonical bridge between the approved run artifact and task compilation.
 
 ### 3.2 `run-artifact.json`
 
@@ -489,7 +498,7 @@ Every finding recorded in verifier or reviewer outputs must use a normalized fin
 
 `dedupe_key` must remain stable when the same underlying defect is restated across retries or reviewer rounds.
 
-## 4. State mutation model
+## 4. Interfaces
 
 ### 4.1 Single-writer rule
 
@@ -549,7 +558,7 @@ For older supported schema versions, the binary may:
 
 If migration is required, it must happen before dispatching any worker.
 
-## 5. CLI surface
+### CLI surface
 
 ### 5.1 Core commands
 
@@ -672,7 +681,7 @@ Rules:
 - `attest ready`, `attest blocked`, `attest next`, and `attest progress` are convenience projections over canonical run state and must not introduce separate hidden state
 - v1 intentionally prefers filtered CLI read models over a general GraphQL layer
 
-## 6. Run lifecycle
+### Run lifecycle
 
 ### 6.1 Run states
 
@@ -776,7 +785,7 @@ Deferrals:
 - the engine, workers, Opus synthesis, and all automated components are prohibited from creating or approving deferrals
 - any deferral without a user-initiated approval record is treated as `unassigned` by the run closure check
 
-## 7. Task compilation
+### Task compilation
 
 ### 7.1 Determinism boundary
 
@@ -855,7 +864,7 @@ Default v1 values:
 
 When a required backend is rate-limited or unhealthy, the engine must reduce dispatch or block the affected tasks rather than flooding retries.
 
-## 8. Claim and lease semantics
+### Claim and lease semantics
 
 ### 8.1 Claim acquisition
 
@@ -920,7 +929,7 @@ Worker input contracts:
 - implementer input: task scope, linked requirement text, task-specific file manifest, relevant run-artifact excerpt, prior blocking findings for the same task lineage
 - reviewer input: linked requirement subset, diff or snapshot delta, completion report, verifier result, prior blocking findings for the same task lineage
 
-## 9. Execution backends
+### Execution backends
 
 ### 9.1 Claude backend
 
@@ -987,7 +996,7 @@ v1 policy:
 - Roam must not own or mutate canonical `.attest/` run state
 - Roam queries must be treated as advisory input to the engine's own decisions, not as authoritative overrides of the spec's scope and closure rules
 
-## 10. Model routing policy
+### Model routing policy
 
 ### 10.1 Default routing table
 
@@ -1028,7 +1037,7 @@ Every task attempt must record:
 
 Routing traceability is stored in `reports/<task-id>/attempt.json`.
 
-## 11. Council checkpoints and verification pipeline
+## 5. Verification
 
 AT-FR-023 requires council checkpoints at least for: spec review, task review, task verification, and final run acceptance. This section specifies all four.
 
@@ -1166,7 +1175,7 @@ Blocking findings include:
 
 Opus synthesis may merge or summarize findings, but it may not dismiss a high-confidence blocking finding from Codex or Gemini without explicit counter-evidence recorded in `dismissal_rationale`.
 
-## 12. Repair reconciliation
+### Repair reconciliation
 
 ### 12.1 Repair triggers
 
@@ -1227,7 +1236,7 @@ If an execution-time clarification blocks safe progress:
 - the run moves to `blocked` when no other dispatchable work remains
 - `attest explain` must surface the exact clarification question and affected requirement IDs
 
-## 13. Observability
+### Observability
 
 ### 13.1 Required status fields
 
@@ -1295,7 +1304,16 @@ The engine must append an event for:
 - reviewer completion
 - clarification creation and resolution
 
-## 14. Failure handling
+## 6. Requirement traceability
+
+This section records how the requirement families in the functional spec map to the mechanisms defined in this technical specification. The mapping is intentionally high-signal rather than exhaustive line-by-line duplication.
+
+- `AT-FR-*` requirements map primarily to the canonical artifact model in section 3, the interface and state-management rules in section 4, and the verification/repair pipeline in section 5.
+- `AT-AS-*` requirements map primarily to the CLI surface, review and approval flow, run lifecycle, explainability, and status rendering rules in section 4.
+- `AT-TS-*` requirements map primarily to deterministic task compilation, lifecycle/state-machine behavior, verification gates, observability, test strategy, and acceptance scenarios in sections 4 and 5.
+- When the execution-plan artifact is enabled, every plan slice and compiled task must carry explicit requirement IDs, and those IDs remain the canonical linkage into `requirement-coverage.json`.
+
+## 7. Open questions and risks
 
 ### 14.1 Preflight checks
 
@@ -1323,7 +1341,7 @@ There is no automatic quorum downgrade in v1.
 
 When unsure, the system keeps work open rather than claiming success.
 
-## 15. Security and trust boundaries
+### Security and trust boundaries
 
 v1 is a local orchestration product, not a secure sandbox.
 
@@ -1335,7 +1353,7 @@ It does not attempt to:
 
 v1 does aim to make false closure operationally harder and more visible.
 
-## 16. Test strategy
+### Test strategy
 
 The implementation must include coverage for:
 
@@ -1367,7 +1385,7 @@ The implementation must include coverage for:
 - quality gate execution as the first verifier step, blocking model review on failure
 - quality gate preflight validation at launch time
 
-## 17. Acceptance scenarios
+### Acceptance scenarios
 
 - **AT-TS-001**: Preparing the same approved run artifact twice yields the same initial tasks.
 - **AT-TS-002**: A launched run persists after the launcher exits and can be resumed after engine death.
@@ -1397,7 +1415,7 @@ The implementation must include coverage for:
 - **AT-TS-026**: `attest prepare` detects a Justfile or Makefile with a `check` target and proposes it as the quality gate in the draft run artifact.
 - **AT-TS-027**: `attest launch` preflight runs the quality gate on the current working tree and blocks launch if it fails.
 
-## 18. Implementation phasing and self-hosting
+### Implementation phasing and self-hosting
 
 `attest` must be built in phases where each phase dogfoods the output of the previous one. This is not optional — it is the primary validation strategy for the product.
 
@@ -1540,7 +1558,7 @@ Throughout all phases:
 - no task is accepted without passing the verification gates available in the current phase
 - when a new verification capability is completed and merged, it must be enabled for all subsequent tasks immediately — capabilities are never deferred once they pass their own review
 
-## 19. Open v1 decisions
+### Open v1 decisions
 
 These decisions should be finalized during implementation planning, not left implicit:
 
@@ -1548,3 +1566,10 @@ These decisions should be finalized during implementation planning, not left imp
 - exact CLI flag surface and config layout
 - run directory location override support
 - whether stop supports graceful-only behavior or also force-stop behavior in v1
+
+## 8. Approval
+
+- Drafted by: Engineering
+- Reviewed by: pending planning review
+- Approved by: pending
+- Approved artifact hash: pending

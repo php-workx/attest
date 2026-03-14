@@ -4,13 +4,19 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/runger/attest/internal/compiler"
 	"github.com/runger/attest/internal/state"
 	"github.com/runger/attest/internal/verifier"
 )
+
+const errReadArtifact = "read artifact: %w"
 
 // Engine is the Phase 1 run engine (spec section 18.3).
 // Serial execution, foreground, no council, no detached mode.
@@ -69,9 +75,10 @@ func (e *Engine) Prepare(ctx context.Context, specPaths []string) (*state.RunArt
 	// Write initial status.
 	status := &state.RunStatus{
 		RunID:              runID,
-		State:              state.RunPreparing,
+		State:              state.RunAwaitingApproval,
 		LastTransitionTime: time.Now(),
 		TaskCountsByState:  map[string]int{},
+		CurrentGate:        "awaiting_approval",
 	}
 	if err := e.RunDir.WriteStatus(status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
@@ -81,17 +88,27 @@ func (e *Engine) Prepare(ctx context.Context, specPaths []string) (*state.RunArt
 		Timestamp: time.Now(),
 		Type:      "run_state_transition",
 		RunID:     runID,
-		Detail:    "preparing",
+		Detail:    "awaiting_approval",
 	})
 
 	return artifact, nil
 }
 
 // Approve marks the run artifact as approved and computes the artifact hash (spec section 6.2).
+// Validates that the execution plan is approved before persisting, so that a failed Compile
+// cannot leave the run in a half-approved state.
 func (e *Engine) Approve(ctx context.Context) error {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
-		return fmt.Errorf("read artifact: %w", err)
+		return fmt.Errorf(errReadArtifact, err)
+	}
+
+	// Validate execution plan is approved before persisting run approval.
+	// This prevents state corruption: without this check, Approve would persist
+	// and a subsequent Compile failure would leave the run marked approved
+	// with no way to compile.
+	if _, err := e.readApprovedExecutionPlan(); err != nil {
+		return fmt.Errorf("cannot approve run: approved execution plan required: %w", err)
 	}
 
 	// Compute artifact hash for immutability enforcement (spec section 3.2).
@@ -116,6 +133,10 @@ func (e *Engine) Approve(ctx context.Context) error {
 		Detail:    "approved",
 	})
 
+	if err := e.refreshRunStatus(state.RunApproved, "approved", nil); err != nil {
+		return fmt.Errorf("refresh status: %w", err)
+	}
+
 	return nil
 }
 
@@ -123,10 +144,26 @@ func (e *Engine) Approve(ctx context.Context) error {
 func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
-		return nil, fmt.Errorf("read artifact: %w", err)
+		return nil, fmt.Errorf(errReadArtifact, err)
 	}
 
-	result, err := compiler.Compile(artifact)
+	plan, err := e.readApprovedExecutionPlan()
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate execution plan is bound to the currently approved technical spec.
+	// A re-approved tech spec must trigger a new execution plan draft.
+	currentSpecHash, err := e.readApprovedTechnicalSpecHash()
+	if err != nil {
+		return nil, fmt.Errorf("validate tech spec lineage: %w", err)
+	}
+	if plan.SourceTechnicalSpecHash != currentSpecHash {
+		return nil, fmt.Errorf("execution plan references tech spec %s but current approved tech spec is %s; re-draft the execution plan",
+			plan.SourceTechnicalSpecHash, currentSpecHash)
+	}
+
+	result, err := compiler.CompileExecutionPlan(artifact, plan)
 	if err != nil {
 		return nil, fmt.Errorf("compile: %w", err)
 	}
@@ -152,6 +189,10 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 		Detail:    fmt.Sprintf("compiled %d tasks covering %d requirements", len(result.Tasks), len(result.Coverage)),
 	})
 
+	if err := e.refreshRunStatus(state.RunRunning, "dispatch_ready", nil); err != nil {
+		return nil, fmt.Errorf("refresh status: %w", err)
+	}
+
 	return result, nil
 }
 
@@ -159,7 +200,7 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state.CompletionReport) (*state.VerifierResult, error) {
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
-		return nil, fmt.Errorf("read artifact: %w", err)
+		return nil, fmt.Errorf(errReadArtifact, err)
 	}
 
 	result, err := verifier.Verify(ctx, task, report, artifact.QualityGate, e.WorkDir)
@@ -173,6 +214,19 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 		return nil, fmt.Errorf("write verifier result: %w", err)
 	}
 
+	taskStatus := state.TaskDone
+	statusReason := ""
+	if !result.Pass {
+		taskStatus = state.TaskBlocked
+		statusReason = summarizeFindings(result.BlockingFindings)
+	}
+	if err := e.persistVerifiedTask(task, taskStatus, statusReason); err != nil {
+		return nil, fmt.Errorf("persist task verification outcome: %w", err)
+	}
+	if err := e.syncCoverageFromTasks(); err != nil {
+		return nil, fmt.Errorf("sync requirement coverage: %w", err)
+	}
+
 	_ = e.RunDir.AppendEvent(state.Event{
 		Timestamp: time.Now(),
 		Type:      "verifier_completed",
@@ -181,7 +235,103 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 		Detail:    fmt.Sprintf("pass=%v findings=%d", result.Pass, len(result.BlockingFindings)),
 	})
 
+	nextState := state.RunRunning
+	var blockers []string
+	if !result.Pass {
+		nextState = state.RunBlocked
+		for _, finding := range result.BlockingFindings {
+			blockers = append(blockers, fmt.Sprintf("%s: %s", task.TaskID, finding.Summary))
+		}
+	}
+	if err := e.refreshRunStatus(nextState, "verification", blockers); err != nil {
+		return nil, fmt.Errorf("refresh status: %w", err)
+	}
+
 	return result, nil
+}
+
+// RetryTask clears a blocked task for another manual attempt.
+func (e *Engine) RetryTask(taskID string) error {
+	tasks, err := e.RunDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	found := false
+	now := time.Now()
+	for i := range tasks {
+		if tasks[i].TaskID != taskID {
+			continue
+		}
+		if tasks[i].Status != state.TaskBlocked && tasks[i].Status != state.TaskRepairPending {
+			return fmt.Errorf("task %s is not retryable from status %s", taskID, tasks[i].Status)
+		}
+		tasks[i].Status = state.TaskPending
+		tasks[i].StatusReason = ""
+		tasks[i].UpdatedAt = now
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+
+	if err := e.RunDir.WriteTasks(tasks); err != nil {
+		return fmt.Errorf("write tasks: %w", err)
+	}
+	if err := e.syncCoverageFromTasks(); err != nil {
+		return fmt.Errorf("sync requirement coverage: %w", err)
+	}
+
+	_ = e.RunDir.AppendEvent(state.Event{
+		Timestamp: now,
+		Type:      "task_retried",
+		RunID:     filepathBase(e.RunDir.Root),
+		TaskID:    taskID,
+		Detail:    "manual retry requested",
+	})
+
+	if err := e.refreshRunStatus(state.RunRunning, "dispatch_ready", nil); err != nil {
+		return fmt.Errorf("refresh status: %w", err)
+	}
+
+	return nil
+}
+
+// ReconcileRunStatus repairs stale run-status.json from canonical task/artifact state.
+func (e *Engine) ReconcileRunStatus() (*state.RunStatus, error) {
+	status, err := e.RunDir.ReadStatus()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read status: %w", err)
+		}
+		status = &state.RunStatus{
+			RunID:             filepathBase(e.RunDir.Root),
+			TaskCountsByState: map[string]int{},
+		}
+	}
+
+	artifact, err := e.RunDir.ReadArtifact()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf(errReadArtifact, err)
+	}
+
+	tasks, err := e.RunDir.ReadTasks()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read tasks: %w", err)
+	}
+
+	inferred := inferredRunStatus(status, artifact, tasks)
+	if !inferred.ok {
+		return status, nil
+	}
+	if !statusNeedsRefresh(status, inferred.state, inferred.gate, inferred.blockers, tasks) {
+		return status, nil
+	}
+	if err := e.refreshRunStatus(inferred.state, inferred.gate, inferred.blockers); err != nil {
+		return nil, fmt.Errorf("refresh status: %w", err)
+	}
+	return e.RunDir.ReadStatus()
 }
 
 // UpdateTaskStatus updates a task's status in tasks.json (single-writer rule, spec section 4.1).
@@ -204,7 +354,13 @@ func (e *Engine) UpdateTaskStatus(taskID string, newStatus state.TaskStatus, rea
 		return fmt.Errorf("task %s not found", taskID)
 	}
 
-	return e.RunDir.WriteTasks(tasks)
+	if err := e.RunDir.WriteTasks(tasks); err != nil {
+		return err
+	}
+	if err := e.syncCoverageFromTasks(); err != nil {
+		return fmt.Errorf("sync requirement coverage: %w", err)
+	}
+	return nil
 }
 
 // GetPendingTasks returns tasks in pending state with satisfied dependencies.
@@ -215,26 +371,291 @@ func (e *Engine) GetPendingTasks() ([]state.Task, error) {
 	}
 
 	taskStates := make(map[string]state.TaskStatus)
-	for _, t := range tasks {
-		taskStates[t.TaskID] = t.Status
+	for i := range tasks {
+		taskStates[tasks[i].TaskID] = tasks[i].Status
 	}
 
 	var pending []state.Task
-	for _, t := range tasks {
-		if t.Status != state.TaskPending {
+	for i := range tasks {
+		if tasks[i].Status != state.TaskPending {
 			continue
 		}
 		// Check dependencies (spec section 7.4).
-		depsReady := true
-		for _, dep := range t.DependsOn {
+		ready := true
+		for _, dep := range tasks[i].DependsOn {
 			if taskStates[dep] != state.TaskDone {
-				depsReady = false
+				ready = false
 				break
 			}
 		}
-		if depsReady {
-			pending = append(pending, t)
+		if ready {
+			pending = append(pending, tasks[i])
 		}
 	}
 	return pending, nil
+}
+
+func (e *Engine) refreshRunStatus(nextState state.RunState, currentGate string, openBlockers []string) error {
+	status, err := e.RunDir.ReadStatus()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		status = &state.RunStatus{
+			RunID:             filepathBase(e.RunDir.Root),
+			TaskCountsByState: map[string]int{},
+		}
+	}
+
+	status.State = nextState
+	status.CurrentGate = currentGate
+	status.OpenBlockers = openBlockers
+	status.LastTransitionTime = time.Now()
+	status.TaskCountsByState = map[string]int{}
+	status.TaskDetails = nil
+
+	var tasks []state.Task
+	if tasks, err = e.RunDir.ReadTasks(); err == nil {
+		for i := range tasks {
+			status.TaskCountsByState[string(tasks[i].Status)]++
+			if tasks[i].StatusReason == "" {
+				continue
+			}
+			status.TaskDetails = append(status.TaskDetails, state.TaskDetail{
+				TaskID:                 tasks[i].TaskID,
+				CurrentGate:            currentGate,
+				BlockingFindingSummary: tasks[i].StatusReason,
+				HumanInputRequired:     tasks[i].Status == state.TaskBlocked,
+			})
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if coverage, err := e.RunDir.ReadCoverage(); err == nil {
+		status.UncoveredRequirementCount = 0
+		for _, item := range coverage {
+			if len(item.CoveringTaskIDs) == 0 && !item.Deferred {
+				status.UncoveredRequirementCount++
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	totalTasks := len(tasks)
+	doneTasks := status.TaskCountsByState[string(state.TaskDone)]
+	if totalTasks > 0 && doneTasks == totalTasks {
+		status.State = state.RunCompleted
+		status.CurrentGate = "completed"
+		status.OpenBlockers = nil
+	}
+
+	return e.RunDir.WriteStatus(status)
+}
+
+func filepathBase(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == os.PathSeparator {
+			return path[i+1:]
+		}
+	}
+	return path
+}
+
+func (e *Engine) persistVerifiedTask(task *state.Task, status state.TaskStatus, reason string) error {
+	tasks, err := e.RunDir.ReadTasks()
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read tasks: %w", err)
+		}
+		tasks = []state.Task{*task}
+	}
+
+	found := false
+	for i := range tasks {
+		if tasks[i].TaskID != task.TaskID {
+			continue
+		}
+		tasks[i].Status = status
+		tasks[i].StatusReason = reason
+		tasks[i].UpdatedAt = time.Now()
+		found = true
+		break
+	}
+	if !found {
+		verifiedTask := *task
+		verifiedTask.Status = status
+		verifiedTask.StatusReason = reason
+		verifiedTask.UpdatedAt = time.Now()
+		tasks = append(tasks, verifiedTask)
+	}
+
+	if err := e.RunDir.WriteTasks(tasks); err != nil {
+		return fmt.Errorf("write tasks: %w", err)
+	}
+	return nil
+}
+
+func summarizeFindings(findings []state.Finding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		if finding.Summary == "" {
+			continue
+		}
+		parts = append(parts, finding.Summary)
+	}
+	return strings.Join(parts, "; ")
+}
+
+type inferredStatus struct {
+	state    state.RunState
+	gate     string
+	blockers []string
+	ok       bool
+}
+
+func inferredRunStatus(current *state.RunStatus, artifact *state.RunArtifact, tasks []state.Task) inferredStatus {
+	if len(tasks) > 0 {
+		blockers := blockedTaskSummaries(tasks)
+		if len(blockers) > 0 {
+			return inferredStatus{state: state.RunBlocked, gate: "verification", blockers: blockers, ok: true}
+		}
+		if allTasksDone(tasks) {
+			return inferredStatus{state: state.RunCompleted, gate: "completed", ok: true}
+		}
+		return inferredStatus{state: state.RunRunning, gate: "dispatch_ready", ok: true}
+	}
+
+	if artifact != nil {
+		if artifact.ApprovedAt != nil {
+			return inferredStatus{state: state.RunApproved, gate: "approved", ok: true}
+		}
+		return inferredStatus{state: state.RunAwaitingApproval, gate: "awaiting_approval", ok: true}
+	}
+
+	if current != nil && current.State != "" {
+		return inferredStatus{state: current.State, gate: current.CurrentGate, blockers: current.OpenBlockers}
+	}
+
+	return inferredStatus{state: state.RunPreparing, gate: "preparing", ok: true}
+}
+
+func statusNeedsRefresh(current *state.RunStatus, nextState state.RunState, gate string, blockers []string, tasks []state.Task) bool {
+	if current == nil {
+		return true
+	}
+	if current.State != nextState || current.CurrentGate != gate || !slices.Equal(current.OpenBlockers, blockers) {
+		return true
+	}
+
+	expectedCounts := make(map[string]int)
+	for i := range tasks {
+		expectedCounts[string(tasks[i].Status)]++
+	}
+	if len(expectedCounts) != len(current.TaskCountsByState) {
+		return true
+	}
+	for k, v := range expectedCounts {
+		if current.TaskCountsByState[k] != v {
+			return true
+		}
+	}
+	return false
+}
+
+func blockedTaskSummaries(tasks []state.Task) []string {
+	var blockers []string
+	for i := range tasks {
+		if tasks[i].Status != state.TaskBlocked {
+			continue
+		}
+		summary := tasks[i].StatusReason
+		if summary == "" {
+			summary = "task is blocked"
+		}
+		blockers = append(blockers, fmt.Sprintf("%s: %s", tasks[i].TaskID, summary))
+	}
+	return blockers
+}
+
+func allTasksDone(tasks []state.Task) bool {
+	if len(tasks) == 0 {
+		return false
+	}
+	for i := range tasks {
+		if tasks[i].Status != state.TaskDone {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) syncCoverageFromTasks() error {
+	coverage, err := e.RunDir.ReadCoverage()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read coverage: %w", err)
+	}
+
+	tasks, err := e.RunDir.ReadTasks()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read tasks: %w", err)
+	}
+
+	taskStates := make(map[string]state.TaskStatus, len(tasks))
+	for i := range tasks {
+		taskStates[tasks[i].TaskID] = tasks[i].Status
+	}
+
+	for i := range coverage {
+		coverage[i].Status = deriveCoverageStatus(&coverage[i], taskStates)
+	}
+
+	if err := e.RunDir.WriteCoverage(coverage); err != nil {
+		return fmt.Errorf("write coverage: %w", err)
+	}
+	return nil
+}
+
+func deriveCoverageStatus(cov *state.RequirementCoverage, taskStates map[string]state.TaskStatus) string {
+	if cov.Deferred {
+		return "deferred"
+	}
+	if len(cov.CoveringTaskIDs) == 0 {
+		return "unassigned"
+	}
+
+	hasInProgress := false
+	hasBlocked := false
+	for _, taskID := range cov.CoveringTaskIDs {
+		status, ok := taskStates[taskID]
+		if !ok {
+			continue
+		}
+		switch status {
+		case state.TaskDone:
+			return "satisfied"
+		case state.TaskPending, state.TaskClaimed, state.TaskImplementing, state.TaskVerifying, state.TaskUnderReview, state.TaskRepairPending:
+			hasInProgress = true
+		case state.TaskBlocked, state.TaskFailed:
+			hasBlocked = true
+		}
+	}
+	if hasInProgress {
+		return "in_progress"
+	}
+	if hasBlocked {
+		return "blocked"
+	}
+	return "unassigned"
 }

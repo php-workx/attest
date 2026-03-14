@@ -20,6 +20,27 @@ type RunArtifact struct {
 	ArtifactHash   string          `json:"artifact_hash,omitempty"`
 }
 
+// ArtifactStatus tracks the lifecycle of a generated planning artifact.
+type ArtifactStatus string
+
+// Artifact lifecycle states for generated planning artifacts.
+const (
+	ArtifactDrafted     ArtifactStatus = "drafted"
+	ArtifactUnderReview ArtifactStatus = "under_review"
+	ArtifactApproved    ArtifactStatus = "approved"
+	ArtifactRejected    ArtifactStatus = "rejected"
+)
+
+// ReviewStatus captures the outcome of a review checkpoint.
+type ReviewStatus string
+
+// Review verdict states for deterministic planning checkpoints.
+const (
+	ReviewPass          ReviewStatus = "pass"
+	ReviewFail          ReviewStatus = "fail"
+	ReviewNeedsRevision ReviewStatus = "needs_revision"
+)
+
 // SourceSpec identifies an input spec file.
 type SourceSpec struct {
 	Path        string `json:"path"`
@@ -94,6 +115,7 @@ type TaskScope struct {
 // TaskStatus represents the current state of a task (spec section 6.3).
 type TaskStatus string
 
+// Task lifecycle states (spec section 6.3).
 const (
 	TaskPending       TaskStatus = "pending"
 	TaskClaimed       TaskStatus = "claimed"
@@ -151,6 +173,7 @@ type RunStatus struct {
 // RunState represents the current state of a run (spec section 6.1).
 type RunState string
 
+// Run lifecycle states (spec section 6.1).
 const (
 	RunPreparing             RunState = "preparing"
 	RunAwaitingClarification RunState = "awaiting_clarification"
@@ -253,6 +276,98 @@ type CouncilResult struct {
 	SynthesizedFindings []Finding `json:"synthesized_findings,omitempty"`
 	DismissalRationale  string    `json:"dismissal_rationale,omitempty"`
 	FollowUpAction      string    `json:"follow_up_action"` // none, reopen, create_child_repair, block, escalate
+}
+
+// ReviewSummary records one reviewer verdict inside a planning review.
+type ReviewSummary struct {
+	ReviewerID string `json:"reviewer_id"`
+	Pass       bool   `json:"pass"`
+	Summary    string `json:"summary"`
+}
+
+// ReviewWarning records a non-blocking issue in a planning review.
+type ReviewWarning struct {
+	WarningID string `json:"warning_id"`
+	SliceID   string `json:"slice_id,omitempty"`
+	Summary   string `json:"summary"`
+}
+
+// ReviewFinding records a blocking issue in a planning review.
+type ReviewFinding struct {
+	FindingID       string   `json:"finding_id"`
+	Severity        string   `json:"severity"`
+	Category        string   `json:"category"`
+	SliceID         string   `json:"slice_id,omitempty"`
+	Summary         string   `json:"summary"`
+	RequirementIDs  []string `json:"requirement_ids,omitempty"`
+	SuggestedRepair string   `json:"suggested_repair,omitempty"`
+}
+
+// TechnicalSpecReview is the council-style review result for a technical spec draft.
+type TechnicalSpecReview struct {
+	SchemaVersion     string          `json:"schema_version"`
+	RunID             string          `json:"run_id"`
+	ArtifactType      string          `json:"artifact_type"`
+	TechnicalSpecHash string          `json:"technical_spec_hash"`
+	Status            ReviewStatus    `json:"status"`
+	Summary           string          `json:"summary"`
+	BlockingFindings  []ReviewFinding `json:"blocking_findings,omitempty"`
+	Warnings          []ReviewWarning `json:"warnings,omitempty"`
+	Reviewers         []ReviewSummary `json:"reviewers,omitempty"`
+	ReviewedAt        time.Time       `json:"reviewed_at"`
+}
+
+// ExecutionSlice is one implementation slice in an approved execution plan.
+type ExecutionSlice struct {
+	SliceID            string   `json:"slice_id"`
+	Title              string   `json:"title"`
+	Goal               string   `json:"goal"`
+	RequirementIDs     []string `json:"requirement_ids"`
+	DependsOn          []string `json:"depends_on,omitempty"`
+	FilesLikelyTouched []string `json:"files_likely_touched,omitempty"`
+	OwnedPaths         []string `json:"owned_paths,omitempty"`
+	AcceptanceChecks   []string `json:"acceptance_checks,omitempty"`
+	Risk               string   `json:"risk"`
+	Size               string   `json:"size"`
+	Notes              string   `json:"notes,omitempty"`
+}
+
+// ExecutionPlan is the run-scoped implementation decomposition artifact.
+type ExecutionPlan struct {
+	SchemaVersion           string           `json:"schema_version"`
+	RunID                   string           `json:"run_id"`
+	ArtifactType            string           `json:"artifact_type"`
+	SourceTechnicalSpecHash string           `json:"source_technical_spec_hash"`
+	Status                  ArtifactStatus   `json:"status"`
+	Slices                  []ExecutionSlice `json:"slices"`
+	GeneratedAt             time.Time        `json:"generated_at"`
+}
+
+// ExecutionPlanReview is the council-style review result for an execution plan.
+type ExecutionPlanReview struct {
+	SchemaVersion     string          `json:"schema_version"`
+	RunID             string          `json:"run_id"`
+	ArtifactType      string          `json:"artifact_type"`
+	ExecutionPlanHash string          `json:"execution_plan_hash"`
+	Status            ReviewStatus    `json:"status"`
+	Summary           string          `json:"summary"`
+	BlockingFindings  []ReviewFinding `json:"blocking_findings,omitempty"`
+	Warnings          []ReviewWarning `json:"warnings,omitempty"`
+	Reviewers         []ReviewSummary `json:"reviewers,omitempty"`
+	ReviewedAt        time.Time       `json:"reviewed_at"`
+}
+
+// ArtifactApproval records explicit approval of a generated planning artifact.
+type ArtifactApproval struct {
+	SchemaVersion string         `json:"schema_version"`
+	RunID         string         `json:"run_id"`
+	ArtifactType  string         `json:"artifact_type"`
+	ArtifactPath  string         `json:"artifact_path"`
+	ArtifactHash  string         `json:"artifact_hash"`
+	Status        ArtifactStatus `json:"status"`
+	ApprovedBy    string         `json:"approved_by"`
+	ApprovedAt    time.Time      `json:"approved_at"`
+	Reason        string         `json:"reason,omitempty"`
 }
 
 // EngineInfo records the engine process metadata (spec section 2.4).

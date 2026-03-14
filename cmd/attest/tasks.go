@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/runger/attest/internal/state"
 )
+
+const errReadTasks = "read tasks: %w"
 
 // taskFilter holds parsed filter flags for task queries (spec section 5.2).
 type taskFilter struct {
@@ -24,11 +27,7 @@ type taskFilter struct {
 	jsonOutput    bool
 }
 
-func parseTaskFilter(args []string) (string, taskFilter, []string) {
-	var runID string
-	var f taskFilter
-	var remaining []string
-
+func parseTaskFilter(args []string) (runID string, f taskFilter) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--status":
@@ -75,55 +74,51 @@ func parseTaskFilter(args []string) (string, taskFilter, []string) {
 		default:
 			if runID == "" {
 				runID = args[i]
-			} else {
-				remaining = append(remaining, args[i])
 			}
 		}
 	}
-	return runID, f, remaining
+	return runID, f
+}
+
+func (f taskFilter) matches(t *state.Task, doneStates map[string]state.TaskStatus) bool {
+	if f.status != "" && string(t.Status) != f.status {
+		return false
+	}
+	if f.taskType != "" && t.TaskType != f.taskType {
+		return false
+	}
+	if f.tag != "" && !slices.Contains(t.Tags, f.tag) {
+		return false
+	}
+	if f.requirementID != "" && !slices.Contains(t.RequirementIDs, f.requirementID) {
+		return false
+	}
+	if f.priority > 0 && t.Priority != f.priority {
+		return false
+	}
+	if f.ready && (t.Status != state.TaskPending || !depsReady(t, doneStates)) {
+		return false
+	}
+	if f.blocked && t.Status != state.TaskBlocked {
+		return false
+	}
+	return true
 }
 
 func filterTasks(tasks []state.Task, f taskFilter, doneStates map[string]state.TaskStatus) []state.Task {
 	var result []state.Task
-	for _, t := range tasks {
-		if f.status != "" && string(t.Status) != f.status {
-			continue
+	for i := range tasks {
+		if f.matches(&tasks[i], doneStates) {
+			result = append(result, tasks[i])
 		}
-		if f.taskType != "" && t.TaskType != f.taskType {
-			continue
-		}
-		if f.tag != "" && !containsTag(t.Tags, f.tag) {
-			continue
-		}
-		if f.requirementID != "" && !containsStr(t.RequirementIDs, f.requirementID) {
-			continue
-		}
-		if f.priority > 0 && t.Priority != f.priority {
-			continue
-		}
-		if f.ready {
-			if t.Status != state.TaskPending {
-				continue
-			}
-			if !depsReady(t, doneStates) {
-				continue
-			}
-		}
-		if f.blocked {
-			if t.Status != state.TaskBlocked {
-				continue
-			}
-		}
-		result = append(result, t)
 	}
-
 	if f.limit > 0 && len(result) > f.limit {
 		result = result[:f.limit]
 	}
 	return result
 }
 
-func depsReady(t state.Task, taskStates map[string]state.TaskStatus) bool {
+func depsReady(t *state.Task, taskStates map[string]state.TaskStatus) bool {
 	for _, dep := range t.DependsOn {
 		if taskStates[dep] != state.TaskDone {
 			return false
@@ -134,28 +129,10 @@ func depsReady(t state.Task, taskStates map[string]state.TaskStatus) bool {
 
 func buildTaskStates(tasks []state.Task) map[string]state.TaskStatus {
 	m := make(map[string]state.TaskStatus, len(tasks))
-	for _, t := range tasks {
-		m[t.TaskID] = t.Status
+	for i := range tasks {
+		m[tasks[i].TaskID] = tasks[i].Status
 	}
 	return m
-}
-
-func containsTag(tags []string, tag string) bool {
-	for _, t := range tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
-}
-
-func containsStr(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 func outputTasks(tasks []state.Task, jsonOutput bool) {
@@ -166,17 +143,21 @@ func outputTasks(tasks []state.Task, jsonOutput bool) {
 		return
 	}
 
-	for _, t := range tasks {
+	for i := range tasks {
+		etag := tasks[i].ETag
+		if len(etag) > 8 {
+			etag = etag[:8]
+		}
 		fmt.Printf("  [%s] %-12s %s (reqs: %s) etag:%s\n",
-			t.Status, t.Slug, t.Title,
-			strings.Join(t.RequirementIDs, ","),
-			t.ETag[:8])
+			tasks[i].Status, tasks[i].Slug, tasks[i].Title,
+			strings.Join(tasks[i].RequirementIDs, ","),
+			etag)
 	}
 }
 
 // cmdTasks implements `attest tasks` (spec section 5.2).
 func cmdTasks(args []string) error {
-	runID, f, _ := parseTaskFilter(args)
+	runID, f := parseTaskFilter(args)
 	if runID == "" {
 		return fmt.Errorf("usage: attest tasks <run-id> [--status X] [--task-type X] [--tag X] [--json]")
 	}
@@ -189,7 +170,7 @@ func cmdTasks(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -206,7 +187,7 @@ func cmdTasks(args []string) error {
 
 // cmdReady implements `attest ready` (spec section 5.2).
 func cmdReady(args []string) error {
-	runID, f, _ := parseTaskFilter(args)
+	runID, f := parseTaskFilter(args)
 	if runID == "" {
 		return fmt.Errorf("usage: attest ready <run-id> [--json]")
 	}
@@ -219,7 +200,7 @@ func cmdReady(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -248,7 +229,7 @@ func cmdReady(args []string) error {
 
 // cmdBlocked implements `attest blocked` (spec section 5.2).
 func cmdBlocked(args []string) error {
-	runID, f, _ := parseTaskFilter(args)
+	runID, f := parseTaskFilter(args)
 	if runID == "" {
 		return fmt.Errorf("usage: attest blocked <run-id> [--json]")
 	}
@@ -261,7 +242,7 @@ func cmdBlocked(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
@@ -277,12 +258,12 @@ func cmdBlocked(args []string) error {
 		}
 		// Group by reason (spec section 5.2).
 		byReason := make(map[string][]state.Task)
-		for _, t := range blocked {
-			reason := t.StatusReason
+		for i := range blocked {
+			reason := blocked[i].StatusReason
 			if reason == "" {
 				reason = "(no reason recorded)"
 			}
-			byReason[reason] = append(byReason[reason], t)
+			byReason[reason] = append(byReason[reason], blocked[i])
 		}
 		for reason, tasks := range byReason {
 			fmt.Printf("Blocked: %s (%d tasks)\n", reason, len(tasks))
@@ -294,7 +275,7 @@ func cmdBlocked(args []string) error {
 
 // cmdNext implements `attest next` (spec section 5.2).
 func cmdNext(args []string) error {
-	runID, f, _ := parseTaskFilter(args)
+	runID, f := parseTaskFilter(args)
 	if runID == "" {
 		return fmt.Errorf("usage: attest next <run-id> [--json]")
 	}
@@ -307,16 +288,16 @@ func cmdNext(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := buildTaskStates(tasks)
 
 	// Find ready tasks sorted by priority.
 	var ready []state.Task
-	for _, t := range tasks {
-		if t.Status == state.TaskPending && depsReady(t, taskStates) {
-			ready = append(ready, t)
+	for i := range tasks {
+		if tasks[i].Status == state.TaskPending && depsReady(&tasks[i], taskStates) {
+			ready = append(ready, tasks[i])
 		}
 	}
 	sort.Slice(ready, func(i, j int) bool {
@@ -338,9 +319,9 @@ func cmdNext(args []string) error {
 
 	// No ready task — point to highest-impact blocker (spec section 5.2).
 	var blocked []state.Task
-	for _, t := range tasks {
-		if t.Status == state.TaskBlocked {
-			blocked = append(blocked, t)
+	for i := range tasks {
+		if tasks[i].Status == state.TaskBlocked {
+			blocked = append(blocked, tasks[i])
 		}
 	}
 	if len(blocked) > 0 {
@@ -363,7 +344,7 @@ func cmdNext(args []string) error {
 
 // cmdProgress implements `attest progress` (spec section 5.2).
 func cmdProgress(args []string) error {
-	runID, f, _ := parseTaskFilter(args)
+	runID, f := parseTaskFilter(args)
 	if runID == "" {
 		return fmt.Errorf("usage: attest progress <run-id> [--json]")
 	}
@@ -376,13 +357,13 @@ func cmdProgress(args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	tasks, err := runDir.ReadTasks()
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		return fmt.Errorf(errReadTasks, err)
 	}
 
 	// Count by task state.
 	counts := make(map[string]int)
-	for _, t := range tasks {
-		counts[string(t.Status)]++
+	for i := range tasks {
+		counts[string(tasks[i].Status)]++
 	}
 
 	// Requirement coverage.

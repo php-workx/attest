@@ -4,65 +4,89 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
 )
 
+const (
+	commandReview  = "review"
+	commandApprove = "approve"
+)
+
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+	os.Exit(run(context.Background(), os.Args[1:], os.Stderr))
+}
+
+func run(ctx context.Context, args []string, stderr io.Writer) int {
+	if len(args) < 1 {
+		usage(stderr)
+		return 1
 	}
 
-	ctx := context.Background()
 	var err error
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "prepare":
-		err = cmdPrepare(ctx, os.Args[2:])
-	case "review":
-		err = cmdReview(ctx, os.Args[2:])
-	case "approve":
-		err = cmdApprove(ctx, os.Args[2:])
+		err = cmdPrepare(ctx, args[1:])
+	case commandReview:
+		err = cmdReview(ctx, args[1:])
+	case "tech-spec":
+		err = cmdTechSpec(ctx, args[1:])
+	case "plan":
+		err = cmdPlan(ctx, args[1:])
+	case commandApprove:
+		err = cmdApprove(ctx, args[1:])
 	case "status":
-		err = cmdStatus(ctx, os.Args[2:])
+		err = cmdStatus(ctx, args[1:])
+	case "report":
+		err = cmdReport(args[1:])
 	case "verify":
-		err = cmdVerify(ctx, os.Args[2:])
+		err = cmdVerify(ctx, args[1:])
+	case "retry":
+		err = cmdRetry(args[1:])
 	case "tasks":
-		err = cmdTasks(os.Args[2:])
+		err = cmdTasks(args[1:])
 	case "ready":
-		err = cmdReady(os.Args[2:])
+		err = cmdReady(args[1:])
 	case "blocked":
-		err = cmdBlocked(os.Args[2:])
+		err = cmdBlocked(args[1:])
 	case "next":
-		err = cmdNext(os.Args[2:])
+		err = cmdNext(args[1:])
 	case "progress":
-		err = cmdProgress(os.Args[2:])
+		err = cmdProgress(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-		usage()
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
+		usage(stderr)
+		return 1
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
+
+	return 0
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `usage: attest <command> [args]
+func usage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, `usage: attest <command> [args]
 
 commands:
   prepare --spec <path> [--spec <path>...]   Ingest specs and create a draft run
   review <run-id>                            Show the run artifact for review
+  tech-spec <draft|review|approve> ...       Manage run-scoped technical specs
+  plan <draft|review|approve> ...            Manage run-scoped execution plans
   approve <run-id> [--launch]                 Approve and compile tasks
   status [<run-id>]                          Show run status
+  report <run-id> <task-id> --from <path>    Import a completion report JSON for a task
   verify <run-id> <task-id>                  Run deterministic verification
+  retry <run-id> <task-id>                   Requeue a blocked task for another attempt
   tasks <run-id> [--status X] [--json]       Query tasks with filters
   ready <run-id> [--json]                    Show dispatchable tasks
   blocked <run-id> [--json]                  Show blocked tasks
@@ -158,6 +182,106 @@ func cmdReview(_ context.Context, args []string) error {
 	return nil
 }
 
+func cmdTechSpec(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
+	}
+
+	action := args[0]
+	runID := args[1]
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+
+	switch action {
+	case "draft":
+		fromPath := ""
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--from" && i+1 < len(args) {
+				fromPath = args[i+1]
+				i++
+			}
+		}
+		if fromPath == "" {
+			fromPath, err = detectTechnicalSpecSource(wd)
+			if err != nil {
+				return err
+			}
+		}
+		if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
+			return err
+		}
+		fmt.Printf("Technical spec recorded: %s\n", runDir.TechnicalSpec())
+		return nil
+	case commandReview:
+		review, err := eng.ReviewTechnicalSpec(ctx)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(review, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case commandApprove:
+		approval, err := eng.ApproveTechnicalSpec(ctx, "user")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Technical spec approved: %s (%s)\n", approval.ArtifactPath, approval.ArtifactHash)
+		return nil
+	default:
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
+	}
+}
+
+func cmdPlan(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: attest plan <draft|review|approve> <run-id>")
+	}
+
+	action := args[0]
+	runID := args[1]
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+
+	switch action {
+	case "draft":
+		plan, err := eng.DraftExecutionPlan(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Execution plan recorded: %s (%d slices)\n", runDir.ExecutionPlan(), len(plan.Slices))
+		return nil
+	case commandReview:
+		review, err := eng.ReviewExecutionPlan(ctx)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(review, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case commandApprove:
+		approval, err := eng.ApproveExecutionPlan(ctx, "user")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Execution plan approved: %s (%s)\n", approval.ArtifactPath, approval.ArtifactHash)
+		return nil
+	default:
+		return fmt.Errorf("usage: attest plan <draft|review|approve> <run-id>")
+	}
+}
+
 func cmdApprove(ctx context.Context, args []string) error {
 	var runID string
 	var launch bool
@@ -198,8 +322,8 @@ func cmdApprove(ctx context.Context, args []string) error {
 	fmt.Printf("Tasks: %d\n", len(result.Tasks))
 	fmt.Printf("Coverage: %d requirements mapped\n", len(result.Coverage))
 
-	for _, t := range result.Tasks {
-		fmt.Printf("  [%s] %s (reqs: %s)\n", t.TaskID, t.Title, strings.Join(t.RequirementIDs, ", "))
+	for i := range result.Tasks {
+		fmt.Printf("  [%s] %s (reqs: %s)\n", result.Tasks[i].TaskID, result.Tasks[i].Title, strings.Join(result.Tasks[i].RequirementIDs, ", "))
 	}
 
 	if launch {
@@ -228,7 +352,8 @@ func cmdStatus(_ context.Context, args []string) error {
 				continue
 			}
 			runDir := state.NewRunDir(wd, e.Name())
-			status, err := runDir.ReadStatus()
+			eng := engine.New(runDir, wd)
+			status, err := eng.ReconcileRunStatus()
 			if err != nil {
 				fmt.Printf("  %s (status unreadable)\n", e.Name())
 				continue
@@ -240,8 +365,8 @@ func cmdStatus(_ context.Context, args []string) error {
 
 	runID := args[0]
 	runDir := state.NewRunDir(wd, runID)
-
-	status, err := runDir.ReadStatus()
+	eng := engine.New(runDir, wd)
+	status, err := eng.ReconcileRunStatus()
 	if err != nil {
 		return fmt.Errorf("read status: %w", err)
 	}
@@ -257,6 +382,75 @@ func cmdStatus(_ context.Context, args []string) error {
 		}
 	}
 
+	return nil
+}
+
+func cmdReport(args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("usage: attest report <run-id> <task-id> --from <path>")
+	}
+
+	runID := args[0]
+	taskID := args[1]
+	var fromPath string
+	for i := 2; i < len(args); i++ {
+		if args[i] == "--from" && i+1 < len(args) {
+			fromPath = args[i+1]
+			i++
+		}
+	}
+	if fromPath == "" {
+		return fmt.Errorf("usage: attest report <run-id> <task-id> --from <path>")
+	}
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	tasks, err := runDir.ReadTasks()
+	if err != nil {
+		return fmt.Errorf("read tasks: %w", err)
+	}
+	found := false
+	for i := range tasks {
+		if tasks[i].TaskID == taskID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+
+	var report state.CompletionReport
+	if err := state.ReadJSON(fromPath, &report); err != nil {
+		return fmt.Errorf("read completion report: %w", err)
+	}
+	if report.TaskID == "" {
+		report.TaskID = taskID
+	}
+	if report.TaskID != taskID {
+		return fmt.Errorf("completion report task_id %q does not match %q", report.TaskID, taskID)
+	}
+	if report.AttemptID == "" {
+		report.AttemptID = "manual-report"
+	}
+
+	reportPath := filepath.Join(runDir.ReportDir(taskID), "completion-report.json")
+	if err := state.WriteJSON(reportPath, &report); err != nil {
+		return fmt.Errorf("write completion report: %w", err)
+	}
+	_ = runDir.AppendEvent(state.Event{
+		Timestamp: time.Now(),
+		Type:      "completion_report_recorded",
+		RunID:     runID,
+		TaskID:    taskID,
+		Detail:    fmt.Sprintf("attempt=%s", report.AttemptID),
+	})
+
+	fmt.Printf("Completion report recorded: %s\n", reportPath)
 	return nil
 }
 
@@ -322,9 +516,52 @@ func cmdVerify(ctx context.Context, args []string) error {
 	return nil
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func cmdRetry(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: attest retry <run-id> <task-id>")
+	}
+
+	runID := args[0]
+	taskID := args[1]
+
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+	if err := eng.RetryTask(taskID); err != nil {
+		return err
+	}
+
+	fmt.Printf("Task requeued: %s\n", taskID)
+	return nil
+}
+
+func truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max-3] + "..."
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
+}
+
+func detectTechnicalSpecSource(workDir string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(workDir, "docs", "specs", "*technical-spec*.md"))
+	if err != nil {
+		return "", fmt.Errorf("find technical spec source: %w", err)
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no technical spec source found; pass --from <path>")
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("multiple technical spec sources found; pass --from <path>")
+	}
+	return matches[0], nil
 }
