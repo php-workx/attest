@@ -144,10 +144,14 @@ func outputTasks(tasks []state.Task, jsonOutput bool) {
 	}
 
 	for i := range tasks {
+		etag := tasks[i].ETag
+		if len(etag) > 8 {
+			etag = etag[:8]
+		}
 		fmt.Printf("  [%s] %-12s %s (reqs: %s) etag:%s\n",
 			tasks[i].Status, tasks[i].Slug, tasks[i].Title,
 			strings.Join(tasks[i].RequirementIDs, ","),
-			tasks[i].ETag[:8])
+			etag)
 	}
 }
 

@@ -117,12 +117,14 @@ func (e *Engine) ReviewExecutionPlan(ctx context.Context) (*state.ExecutionPlanR
 		review.Summary = "Execution plan has blocking structural issues."
 	}
 
-	plan.Status = state.ArtifactUnderReview
-	if err := e.RunDir.WriteExecutionPlan(plan); err != nil {
-		return nil, fmt.Errorf("update execution plan status: %w", err)
-	}
-	if err := e.RunDir.WriteExecutionPlanMarkdown(renderExecutionPlanMarkdown(plan)); err != nil {
-		return nil, fmt.Errorf("update execution plan markdown: %w", err)
+	if plan.Status != state.ArtifactApproved {
+		plan.Status = state.ArtifactUnderReview
+		if err := e.RunDir.WriteExecutionPlan(plan); err != nil {
+			return nil, fmt.Errorf("update execution plan status: %w", err)
+		}
+		if err := e.RunDir.WriteExecutionPlanMarkdown(renderExecutionPlanMarkdown(plan)); err != nil {
+			return nil, fmt.Errorf("update execution plan markdown: %w", err)
+		}
 	}
 	_, planHash, err := e.readExecutionPlanWithHash()
 	if err != nil {
