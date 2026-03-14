@@ -27,6 +27,10 @@ build:
     mkdir -p bin
     go build -ldflags '{{ldflags}}' -o bin/attest ./cmd/attest
 
+# Install attest to $GOPATH/bin (or $GOBIN)
+install:
+    go install -ldflags '{{ldflags}}' ./cmd/attest
+
 # Go vet
 vet:
     go vet ./...
@@ -95,11 +99,11 @@ sonar:
     elif [ ! -f .env ]; then \
         echo ".env missing, skipping sonar scan"; \
     else \
-        TOKEN=$(grep -E '^SONAR_TOKEN=[A-Za-z0-9_]+$$' .env | cut -d= -f2); \
-        if [ -z "$$TOKEN" ]; then \
+        TOKEN=$(grep -E '^SONAR_TOKEN=[A-Za-z0-9_]+$' .env | cut -d= -f2); \
+        if [ -z "$TOKEN" ]; then \
             echo "error: SONAR_TOKEN not found or invalid in .env"; exit 1; \
         fi; \
-        SONAR_TOKEN="$$TOKEN" sonar-scanner; \
+        SONAR_TOKEN="$TOKEN" sonar-scanner; \
     fi
 
 # Format all Go files in-place
@@ -114,7 +118,7 @@ setup: install-dev
 # Install required development tools (pinned versions)
 install-dev:
     @echo "Installing Go tools..."
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@{{golangci_lint_ver}}
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_ver}}
     go install mvdan.cc/gofumpt@{{gofumpt_ver}}
     go install golang.org/x/vuln/cmd/govulncheck@{{govulncheck_ver}}
     go install github.com/rhysd/actionlint/cmd/actionlint@{{actionlint_ver}}
