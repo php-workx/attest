@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runger/attest/internal/councilflow"
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
 )
@@ -81,6 +82,7 @@ commands:
   prepare --spec <path> [--spec <path>...]   Ingest specs and create a draft run
   review <run-id>                            Show the run artifact for review
   tech-spec <draft|review|approve> ...       Manage run-scoped technical specs
+                                              review flags: --council --dry-run --round N
   plan <draft|review|approve> ...            Manage run-scoped execution plans
   approve <run-id> [--launch]                 Approve and compile tasks
   status [<run-id>]                          Show run status
@@ -219,13 +221,8 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 		fmt.Printf("Technical spec recorded: %s\n", runDir.TechnicalSpec())
 		return nil
 	case commandReview:
-		review, err := eng.ReviewTechnicalSpec(ctx)
-		if err != nil {
-			return err
-		}
-		data, _ := json.MarshalIndent(review, "", "  ")
-		fmt.Println(string(data))
-		return nil
+		return cmdTechSpecReview(ctx, eng, args[2:])
+
 	case commandApprove:
 		approval, err := eng.ApproveTechnicalSpec(ctx, "user")
 		if err != nil {
@@ -236,6 +233,57 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
 	}
+}
+
+func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) error {
+	council := false
+	dryRun := false
+	rounds := 2
+	for i := 0; i < len(flags); i++ {
+		switch flags[i] {
+		case "--council":
+			council = true
+		case "--dry-run":
+			dryRun = true
+		case "--round":
+			if i+1 < len(flags) {
+				_, _ = fmt.Sscanf(flags[i+1], "%d", &rounds)
+				i++
+			}
+		}
+	}
+
+	review, err := eng.ReviewTechnicalSpec(ctx)
+	if err != nil {
+		return err
+	}
+	data, _ := json.MarshalIndent(review, "", "  ")
+	fmt.Println(string(data))
+
+	if !council {
+		return nil
+	}
+	if review.Status != state.ReviewPass {
+		return fmt.Errorf("structural review failed — fix before running council")
+	}
+
+	cfg := councilflow.DefaultConfig()
+	cfg.Rounds = rounds
+	cfg.DryRun = dryRun
+	result, err := eng.CouncilReviewTechnicalSpec(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\nCouncil verdict: %s\n", result.OverallVerdict)
+	for i := range result.Rounds {
+		round := &result.Rounds[i]
+		for j := range round.Reviews {
+			r := &round.Reviews[j]
+			fmt.Printf("  [round %d] %s: %s (%d findings)\n", round.Round, r.PersonaID, r.Verdict, len(r.Findings))
+		}
+	}
+	return nil
 }
 
 func cmdPlan(ctx context.Context, args []string) error {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/runger/attest/internal/councilflow"
 	"github.com/runger/attest/internal/state"
 )
 
@@ -162,6 +164,30 @@ func (e *Engine) ReviewTechnicalSpec(ctx context.Context) (*state.TechnicalSpecR
 	})
 
 	return review, nil
+}
+
+// CouncilReviewTechnicalSpec runs the multi-persona council review pipeline.
+// Structural checks must pass first (call ReviewTechnicalSpec before this).
+func (e *Engine) CouncilReviewTechnicalSpec(ctx context.Context, cfg councilflow.CouncilConfig) (*councilflow.CouncilResult, error) {
+	data, err := e.RunDir.ReadTechnicalSpec()
+	if err != nil {
+		return nil, fmt.Errorf("read technical spec: %w", err)
+	}
+
+	councilDir := filepath.Join(e.RunDir.Root, "council")
+	result, err := councilflow.RunCouncil(ctx, string(data), councilDir, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("council review: %w", err)
+	}
+
+	_ = e.RunDir.AppendEvent(state.Event{
+		Timestamp: time.Now(),
+		Type:      "technical_spec_council_reviewed",
+		RunID:     filepathBase(e.RunDir.Root),
+		Detail:    fmt.Sprintf("verdict=%s rounds=%d", result.OverallVerdict, len(result.Rounds)),
+	})
+
+	return result, nil
 }
 
 // ApproveTechnicalSpec records explicit approval for the run-scoped technical spec.
