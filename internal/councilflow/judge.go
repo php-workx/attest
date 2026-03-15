@@ -39,67 +39,113 @@ func DefaultJudgeConfig() JudgeConfig {
 	}
 }
 
+// judgeDecision holds one judge instance's accept/reject decisions and edit snippets.
+type judgeDecision struct {
+	personaID  string
+	edits      []SpecEdit
+	rejections []Rejection
+	err        error
+}
+
 // RunJudge executes the judge/editor consolidation for one round.
-// Processes reviewers one at a time to keep prompt size manageable and allow
-// the spec to evolve incrementally as findings are applied.
+// Phase 1: Parallel Opus instances judge each reviewer's findings independently.
+// Phase 2: Apply all accepted edits to the spec (pure string ops, no LLM).
 func RunJudge(ctx context.Context, spec string, round int, reviews []ReviewOutput, outputDir string, cfg JudgeConfig) (*ConsolidationResult, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
 
-	fmt.Printf("  [round %d] judge consolidating %d reviews (one at a time) ...\n", round, len(reviews))
+	// Filter to reviews with findings worth judging.
+	var judgeable []ReviewOutput
+	for i := range reviews {
+		if len(reviews[i].Findings) == 0 {
+			fmt.Printf("  [round %d] judge: skip %s (no findings)\n", round, reviews[i].PersonaID)
+			continue
+		}
+		// Skip reviews with only minor findings.
+		hasNonMinor := false
+		for j := range reviews[i].Findings {
+			if reviews[i].Findings[j].Severity != "minor" {
+				hasNonMinor = true
+				break
+			}
+		}
+		if !hasNonMinor {
+			fmt.Printf("  [round %d] judge: skip %s (minor only)\n", round, reviews[i].PersonaID)
+			continue
+		}
+		judgeable = append(judgeable, reviews[i])
+	}
+
+	fmt.Printf("  [round %d] judge: %d reviewers to process (parallel) ...\n", round, len(judgeable))
+
+	// Phase 1: Parallel judgment — each reviewer's findings judged independently.
+	ch := make(chan judgeDecision, len(judgeable))
+	for i := range judgeable {
+		go func(review ReviewOutput) {
+			decision := judgeOneReview(ctx, spec, round, &review, outputDir, &cfg)
+			ch <- decision
+		}(judgeable[i])
+	}
+
+	// Collect decisions.
+	var allEdits []SpecEdit
+	var allRejections []Rejection
+	var allFailed []string
+	for range judgeable {
+		decision := <-ch
+		if decision.err != nil {
+			fmt.Printf("  [round %d] judge: %s FAILED (%v)\n", round, decision.personaID, decision.err)
+			continue
+		}
+		allEdits = append(allEdits, decision.edits...)
+		allRejections = append(allRejections, decision.rejections...)
+		fmt.Printf("  [round %d] judge: %s — %d edits, %d rejected\n",
+			round, decision.personaID, len(decision.edits), len(decision.rejections))
+	}
+
+	// Phase 2: Apply all accepted edits to the spec (no LLM, pure string ops).
+	updatedSpec := spec
+	appliedCount := 0
+	for i := range allEdits {
+		edit := &allEdits[i]
+		if edit.Find == "" {
+			allFailed = append(allFailed, fmt.Sprintf("%s: empty find field", edit.FindingID))
+			continue
+		}
+		if edit.Replace == "" {
+			allFailed = append(allFailed, fmt.Sprintf("%s: empty replace field", edit.FindingID))
+			continue
+		}
+		if !strings.Contains(updatedSpec, edit.Find) {
+			allFailed = append(allFailed, fmt.Sprintf("%s: find text not found in spec", edit.FindingID))
+			continue
+		}
+		updatedSpec = strings.Replace(updatedSpec, edit.Find, edit.Replace, 1)
+		appliedCount++
+	}
+
+	if strings.TrimSpace(updatedSpec) == "" {
+		return nil, fmt.Errorf("judge edits produced an empty spec — aborting to prevent data loss")
+	}
+
+	if len(allFailed) > 0 {
+		fmt.Printf("  [round %d] judge: %d edits could not be applied\n", round, len(allFailed))
+	}
 
 	combined := &ConsolidationResult{
 		Round:       round,
-		UpdatedSpec: spec,
-	}
-	currentSpec := spec
-
-	for i := range reviews {
-		review := &reviews[i]
-		if len(review.Findings) == 0 {
-			fmt.Printf("  [round %d] judge: skip %s (no findings)\n", round, review.PersonaID)
-			continue
-		}
-
-		fmt.Printf("  [round %d] judge: processing %s (%d findings) ...\n", round, review.PersonaID, len(review.Findings))
-
-		prompt := buildJudgePrompt(currentSpec, round, []ReviewOutput{*review})
-
-		// Write per-reviewer prompt for audit.
-		promptPath := filepath.Join(outputDir, fmt.Sprintf("judge-prompt-%s.md", review.PersonaID))
-		if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
-			return nil, fmt.Errorf("write judge prompt: %w", err)
-		}
-
-		output, err := invokeBackend(ctx, &cfg.Backend, prompt, cfg.TimeoutSec)
-		if err != nil {
-			// Non-fatal per reviewer — continue with remaining.
-			fmt.Printf("  [round %d] judge: %s FAILED (%v)\n", round, review.PersonaID, err)
-			continue
-		}
-
-		result, err := parseJudgeOutput(output, round, currentSpec)
-		if err != nil {
-			fmt.Printf("  [round %d] judge: %s parse failed (%v)\n", round, review.PersonaID, err)
-			continue
-		}
-
-		// Accumulate results.
-		combined.AppliedCount += result.AppliedCount
-		combined.RejectedCount += result.RejectedCount
-		combined.RejectionLog.Rejections = append(combined.RejectionLog.Rejections, result.RejectionLog.Rejections...)
-		combined.FailedEdits = append(combined.FailedEdits, result.FailedEdits...)
-		currentSpec = result.UpdatedSpec
-
-		fmt.Printf("  [round %d] judge: %s — %d applied, %d rejected\n", round, review.PersonaID, result.AppliedCount, result.RejectedCount)
+		UpdatedSpec: updatedSpec,
+		RejectionLog: RejectionLog{
+			Round:      round,
+			Rejections: allRejections,
+		},
+		AppliedCount:   appliedCount,
+		RejectedCount:  len(allRejections),
+		FailedEdits:    allFailed,
+		ConsolidatedAt: time.Now(),
 	}
 
-	combined.UpdatedSpec = currentSpec
-	combined.RejectionLog.Round = round
-	combined.ConsolidatedAt = time.Now()
-
-	// Write combined outputs.
 	if err := writeJSON(filepath.Join(outputDir, "consolidation.json"), combined); err != nil {
 		return nil, fmt.Errorf("write consolidation: %w", err)
 	}
@@ -107,9 +153,43 @@ func RunJudge(ctx context.Context, spec string, round int, reviews []ReviewOutpu
 		return nil, fmt.Errorf("write rejection log: %w", err)
 	}
 
-	fmt.Printf("  [round %d] judge total: %d applied, %d rejected\n", round, combined.AppliedCount, combined.RejectedCount)
+	fmt.Printf("  [round %d] judge total: %d applied, %d rejected, %d failed\n",
+		round, appliedCount, len(allRejections), len(allFailed))
 
 	return combined, nil
+}
+
+func judgeOneReview(ctx context.Context, spec string, round int, review *ReviewOutput, outputDir string, cfg *JudgeConfig) judgeDecision {
+	prompt := buildJudgePrompt(spec, round, []ReviewOutput{*review})
+
+	// Write per-reviewer prompt for audit.
+	promptPath := filepath.Join(outputDir, fmt.Sprintf("judge-prompt-%s.md", review.PersonaID))
+	_ = os.WriteFile(promptPath, []byte(prompt), 0o644)
+
+	output, err := invokeBackend(ctx, &cfg.Backend, prompt, cfg.TimeoutSec)
+	if err != nil {
+		return judgeDecision{personaID: review.PersonaID, err: err}
+	}
+
+	parsed, err := parseJudgeRawOutput(output)
+	if err != nil {
+		return judgeDecision{personaID: review.PersonaID, err: err}
+	}
+
+	return judgeDecision{
+		personaID:  review.PersonaID,
+		edits:      parsed.Edits,
+		rejections: parsed.Rejected,
+	}
+}
+
+func parseJudgeRawOutput(raw string) (*judgeRawOutput, error) {
+	jsonStr := extractJSON(raw)
+	var parsed judgeRawOutput
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return nil, fmt.Errorf("unmarshal judge output: %w (raw: %s)", err, truncateForError(raw, 200))
+	}
+	return &parsed, nil
 }
 
 func buildJudgePrompt(spec string, round int, reviews []ReviewOutput) string {
