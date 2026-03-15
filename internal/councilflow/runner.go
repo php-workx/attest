@@ -13,15 +13,16 @@ import (
 
 // CLIBackend describes how to invoke a reviewer via a CLI tool.
 type CLIBackend struct {
-	Command string   // e.g., "claude", "codex", "gemini"
-	Args    []string // base args before the prompt
+	Command    string   // e.g., "claude", "codex", "gemini"
+	Args       []string // base args before the prompt
+	PromptFlag string   // if set, prompt is passed as --flag=value instead of positional
 }
 
 // KnownBackends maps backend names to their default CLI invocation config.
 var KnownBackends = map[string]CLIBackend{
 	BackendClaude: {Command: "claude", Args: []string{"-p", "--model", "opus"}},
 	BackendCodex:  {Command: "codex", Args: []string{"exec", "-m", "gpt-5.4", "-c", "reasoning_effort=high"}},
-	BackendGemini: {Command: "gemini", Args: []string{"-p", "-m", "gemini-3-pro-preview", "--thinking_budget", "high"}},
+	BackendGemini: {Command: "gemini", Args: []string{"-m", "gemini-3-pro-preview"}, PromptFlag: "-p"},
 }
 
 // BackendFor returns the CLI backend for a persona.
@@ -165,7 +166,11 @@ func invokeBackend(ctx context.Context, backend *CLIBackend, prompt string, time
 	defer cancel()
 
 	args := append([]string(nil), backend.Args...)
-	args = append(args, prompt)
+	if backend.PromptFlag != "" {
+		args = append(args, backend.PromptFlag, prompt)
+	} else {
+		args = append(args, prompt)
+	}
 
 	cmd := exec.CommandContext(ctx, backend.Command, args...) //nolint:gosec // command is from trusted CLIBackend config, not user input
 	cmd.Stderr = os.Stderr
