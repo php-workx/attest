@@ -27,7 +27,7 @@ func FixedPersonas() []Persona {
 				"Canonical artifacts",
 			},
 			Backend:   BackendCodex,
-			ModelPref: "o3",
+			ModelPref: "gpt-5.4",
 		},
 		{
 			PersonaID:   "testability-reviewer",
@@ -43,7 +43,7 @@ func FixedPersonas() []Persona {
 				"Interfaces",
 			},
 			Backend:   BackendGemini,
-			ModelPref: "gemini-2.5-pro",
+			ModelPref: "gemini-3-pro-preview",
 		},
 	}
 }

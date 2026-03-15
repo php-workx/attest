@@ -19,9 +19,9 @@ type CLIBackend struct {
 
 // KnownBackends maps backend names to their default CLI invocation config.
 var KnownBackends = map[string]CLIBackend{
-	BackendClaude: {Command: "claude", Args: []string{"-p", "--model", "sonnet"}},
-	BackendCodex:  {Command: "codex", Args: []string{"exec", "-m", "o3"}},
-	BackendGemini: {Command: "gemini", Args: []string{"-p", "-m", "gemini-2.5-pro"}},
+	BackendClaude: {Command: "claude", Args: []string{"-p", "--model", "opus"}},
+	BackendCodex:  {Command: "codex", Args: []string{"exec", "-m", "gpt-5.4", "-c", "reasoning_effort=high"}},
+	BackendGemini: {Command: "gemini", Args: []string{"-p", "-m", "gemini-3-pro-preview", "--thinking_budget", "high"}},
 }
 
 // BackendFor returns the CLI backend for a persona.
