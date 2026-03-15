@@ -71,6 +71,7 @@ func replaceArgValue(args []string, flag, value string) []string {
 type Runner struct {
 	OutputDir  string // directory to write review artifacts
 	TimeoutSec int    // per-reviewer timeout in seconds
+	Force      bool   // re-run all reviewers even if cached results exist
 }
 
 // NewRunner creates a runner with defaults.
@@ -82,6 +83,7 @@ func NewRunner(outputDir string) *Runner {
 }
 
 // RunRound executes a single review round: generates prompts, runs each persona, collects findings.
+// Skips personas that already have a valid cached review file unless Force is set.
 func (r *Runner) RunRound(ctx context.Context, spec string, round int, personas []Persona, priorFindings []ReviewOutput, codebaseCtx string) (*RoundResult, error) {
 	if err := os.MkdirAll(r.OutputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output dir: %w", err)
@@ -98,6 +100,17 @@ func (r *Runner) RunRound(ctx context.Context, spec string, round int, personas 
 
 	for i := range personas {
 		persona := &personas[i]
+		reviewPath := filepath.Join(r.OutputDir, fmt.Sprintf("review-%s.json", persona.PersonaID))
+
+		// Check for cached review.
+		if !r.Force {
+			if cached, err := loadCachedReview(reviewPath); err == nil {
+				result.Reviews = append(result.Reviews, *cached)
+				fmt.Printf("  [round %d] %s: cached %s (%d findings)\n", round, persona.DisplayName, cached.Verdict, len(cached.Findings))
+				continue
+			}
+		}
+
 		backend := BackendFor(persona)
 		fmt.Printf("  [round %d] reviewing: %s (via %s) ...\n", round, persona.DisplayName, backend.Command)
 
@@ -106,7 +119,6 @@ func (r *Runner) RunRound(ctx context.Context, spec string, round int, personas 
 			return nil, fmt.Errorf("review %s: %w", persona.PersonaID, err)
 		}
 
-		reviewPath := filepath.Join(r.OutputDir, fmt.Sprintf("review-%s.json", persona.PersonaID))
 		if err := writeJSON(reviewPath, review); err != nil {
 			return nil, fmt.Errorf("write review %s: %w", persona.PersonaID, err)
 		}
@@ -158,6 +170,23 @@ func (r *Runner) runSingleReview(ctx context.Context, spec string, round int, pe
 		return nudgeReview, nil
 	}
 	return review, nil
+}
+
+func loadCachedReview(path string) (*ReviewOutput, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var review ReviewOutput
+	if err := json.Unmarshal(data, &review); err != nil {
+		return nil, err
+	}
+	// A cached review is valid if it has a verdict — persona_id may be empty
+	// if the model omitted it from its response.
+	if review.Verdict == "" {
+		return nil, fmt.Errorf("cached review missing verdict")
+	}
+	return &review, nil
 }
 
 func invokeBackend(ctx context.Context, backend *CLIBackend, prompt string, timeoutSec int) (string, error) {

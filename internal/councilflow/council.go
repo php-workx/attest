@@ -12,6 +12,7 @@ type CouncilConfig struct {
 	Rounds          int    // number of review rounds (default: 2)
 	CodebaseContext string // optional codebase context for reviewers
 	DryRun          bool   // generate prompts without executing
+	Force           bool   // re-run all reviewers even if cached results exist
 }
 
 // DefaultConfig returns a config with sensible defaults.
@@ -43,6 +44,7 @@ func RunCouncil(ctx context.Context, spec, outputBaseDir string, cfg CouncilConf
 
 		roundDir := filepath.Join(outputBaseDir, fmt.Sprintf("round-%d", round))
 		runner := NewRunner(roundDir)
+		runner.Force = cfg.Force
 
 		if cfg.DryRun {
 			if err := writeDryRunPrompts(roundDir, spec, round, personas, priorFindings, cfg.CodebaseContext); err != nil {

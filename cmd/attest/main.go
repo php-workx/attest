@@ -82,7 +82,7 @@ commands:
   prepare --spec <path> [--spec <path>...]   Ingest specs and create a draft run
   review <run-id>                            Show the run artifact for review
   tech-spec <draft|review|approve> ...       Manage run-scoped technical specs
-                                              review flags: --council --dry-run --round N
+                                              review flags: --council --dry-run --force --round N
   plan <draft|review|approve> ...            Manage run-scoped execution plans
   approve <run-id> [--launch]                 Approve and compile tasks
   status [<run-id>]                          Show run status
@@ -238,6 +238,7 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) error {
 	council := false
 	dryRun := false
+	force := false
 	rounds := 2
 	for i := 0; i < len(flags); i++ {
 		switch flags[i] {
@@ -245,6 +246,8 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) 
 			council = true
 		case "--dry-run":
 			dryRun = true
+		case "--force":
+			force = true
 		case "--round":
 			if i+1 < len(flags) {
 				_, _ = fmt.Sscanf(flags[i+1], "%d", &rounds)
@@ -270,6 +273,7 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) 
 	cfg := councilflow.DefaultConfig()
 	cfg.Rounds = rounds
 	cfg.DryRun = dryRun
+	cfg.Force = force
 	result, err := eng.CouncilReviewTechnicalSpec(ctx, cfg)
 	if err != nil {
 		return err
