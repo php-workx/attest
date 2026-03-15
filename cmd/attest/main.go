@@ -82,6 +82,7 @@ commands:
   prepare --spec <path> [--spec <path>...]   Ingest specs and create a draft run
   review <run-id>                            Show the run artifact for review
   tech-spec <draft|review|approve> ...       Manage run-scoped technical specs
+                                              review --from <path> --council  (one-step shortcut)
                                               review flags: --council --dry-run --force --round N
   plan <draft|review|approve> ...            Manage run-scoped execution plans
   approve <run-id> [--launch]                 Approve and compile tasks
@@ -185,16 +186,57 @@ func cmdReview(_ context.Context, args []string) error {
 }
 
 func cmdTechSpec(ctx context.Context, args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> [run-id] [--from <path>] [--council] [--force] [--round N]")
 	}
 
 	action := args[0]
-	runID := args[1]
+
+	// Parse --from from remaining args (needed for both draft and review shortcut).
+	var fromPath, runID string
+	var remaining []string
+	// Flags that consume the next arg as their value.
+	valuedFlags := map[string]bool{"--from": true, "--round": true}
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--from" {
+			i++
+			if i < len(args) {
+				fromPath = args[i]
+			}
+			continue
+		}
+		if valuedFlags[arg] {
+			remaining = append(remaining, arg)
+			i++
+			if i < len(args) {
+				remaining = append(remaining, args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			remaining = append(remaining, arg)
+			continue
+		}
+		if runID == "" {
+			runID = arg
+			continue
+		}
+		remaining = append(remaining, arg)
+	}
 
 	wd, err := workDir()
 	if err != nil {
 		return err
+	}
+
+	// Shortcut: "review --from <path>" without a run-id creates a temporary run.
+	if action == commandReview && runID == "" && fromPath != "" {
+		return cmdTechSpecReviewFromFile(ctx, wd, fromPath, remaining)
+	}
+
+	if runID == "" {
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
 	}
 
 	runDir := state.NewRunDir(wd, runID)
@@ -202,13 +244,6 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 
 	switch action {
 	case "draft":
-		fromPath := ""
-		for i := 2; i < len(args); i++ {
-			if args[i] == "--from" && i+1 < len(args) {
-				fromPath = args[i+1]
-				i++
-			}
-		}
 		if fromPath == "" {
 			fromPath, err = detectTechnicalSpecSource(wd)
 			if err != nil {
@@ -221,8 +256,7 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 		fmt.Printf("Technical spec recorded: %s\n", runDir.TechnicalSpec())
 		return nil
 	case commandReview:
-		return cmdTechSpecReview(ctx, eng, args[2:])
-
+		return cmdTechSpecReview(ctx, eng, remaining)
 	case commandApprove:
 		approval, err := eng.ApproveTechnicalSpec(ctx, "user")
 		if err != nil {
@@ -231,8 +265,29 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 		fmt.Printf("Technical spec approved: %s (%s)\n", approval.ArtifactPath, approval.ArtifactHash)
 		return nil
 	default:
-		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> [run-id] [--from <path>]")
 	}
+}
+
+// cmdTechSpecReviewFromFile creates a temporary run, drafts the spec, and runs review in one step.
+func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags []string) error {
+	runDir := state.NewRunDir(wd, "placeholder")
+	eng := engine.New(runDir, wd)
+
+	// Prepare a minimal run from the spec file.
+	artifact, err := eng.Prepare(ctx, []string{fromPath})
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	fmt.Printf("Run created: %s (%d requirements)\n", artifact.RunID, len(artifact.Requirements))
+
+	// Draft the tech spec into the run.
+	if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
+		return fmt.Errorf("draft: %w", err)
+	}
+
+	// Run the review.
+	return cmdTechSpecReview(ctx, eng, flags)
 }
 
 func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) error {
