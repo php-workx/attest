@@ -20,7 +20,7 @@ type CLIBackend struct {
 // KnownBackends maps backend names to their CLI invocation config.
 var KnownBackends = map[string]CLIBackend{
 	BackendClaude: {Command: "claude", Args: []string{"-p"}},
-	BackendCodex:  {Command: "codex", Args: []string{"-q"}},
+	BackendCodex:  {Command: "codex", Args: []string{"exec"}},
 	BackendGemini: {Command: "gemini", Args: []string{"-p"}},
 }
 
