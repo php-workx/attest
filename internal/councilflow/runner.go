@@ -17,19 +17,53 @@ type CLIBackend struct {
 	Args    []string // base args before the prompt
 }
 
-// KnownBackends maps backend names to their CLI invocation config.
+// KnownBackends maps backend names to their default CLI invocation config.
 var KnownBackends = map[string]CLIBackend{
-	BackendClaude: {Command: "claude", Args: []string{"-p"}},
-	BackendCodex:  {Command: "codex", Args: []string{"exec"}},
-	BackendGemini: {Command: "gemini", Args: []string{"-p"}},
+	BackendClaude: {Command: "claude", Args: []string{"-p", "--model", "sonnet"}},
+	BackendCodex:  {Command: "codex", Args: []string{"exec", "-m", "o3"}},
+	BackendGemini: {Command: "gemini", Args: []string{"-p", "-m", "gemini-2.5-pro"}},
 }
 
-// BackendFor returns the CLI backend for a persona, falling back to claude.
+// BackendFor returns the CLI backend for a persona.
+// If the persona specifies a model preference, it overrides the default model arg.
 func BackendFor(persona *Persona) CLIBackend {
-	if b, ok := KnownBackends[persona.Backend]; ok {
-		return b
+	base, ok := KnownBackends[persona.Backend]
+	if !ok {
+		base = KnownBackends[BackendClaude]
 	}
-	return KnownBackends[BackendClaude]
+	if persona.ModelPref == "" {
+		return base
+	}
+
+	// Override the model in the args.
+	args := make([]string, len(base.Args))
+	copy(args, base.Args)
+	args = overrideModelArg(persona.Backend, args, persona.ModelPref)
+	return CLIBackend{Command: base.Command, Args: args}
+}
+
+// overrideModelArg replaces the model argument in a CLI args slice.
+func overrideModelArg(backend string, args []string, model string) []string {
+	switch backend {
+	case BackendClaude:
+		return replaceArgValue(args, "--model", model)
+	case BackendCodex:
+		return replaceArgValue(args, "-m", model)
+	case BackendGemini:
+		return replaceArgValue(args, "-m", model)
+	default:
+		return args
+	}
+}
+
+func replaceArgValue(args []string, flag, value string) []string {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			args[i+1] = value
+			return args
+		}
+	}
+	return append(args, flag, value)
 }
 
 // Runner executes council reviews for a technical spec.
