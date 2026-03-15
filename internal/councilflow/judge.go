@@ -101,6 +101,16 @@ func buildJudgePrompt(spec string, round int, reviews []ReviewOutput) string {
 	b.WriteString("- Apply findings as minimal surgical edits, not wholesale rewrites.\n")
 	b.WriteString("- When two findings conflict, apply the higher-severity one and reject the other with an explanation.\n\n")
 
+	b.WriteString("## Security Finding Triage\n\n")
+	b.WriteString("Security reviewers often flag issues that are real but not relevant to the current implementation phase. ")
+	b.WriteString("For each security finding, evaluate:\n\n")
+	b.WriteString("1. Is this exploitable in the CURRENT phase (single-user CLI, local execution, no network exposure)?\n")
+	b.WriteString("2. Or is this only relevant for FUTURE phases (multi-user, detached engine, network-exposed APIs)?\n\n")
+	b.WriteString("APPLY current-phase findings as spec edits. ")
+	b.WriteString("For future-phase findings: APPLY them as clearly marked future-phase requirements ")
+	b.WriteString("(e.g., 'When multi-user mode is introduced, this must be addressed by...'). ")
+	b.WriteString("REJECT only findings that are factually wrong or already covered.\n\n")
+
 	b.WriteString("## Reviewer Findings\n\n")
 	for i := range reviews {
 		review := &reviews[i]

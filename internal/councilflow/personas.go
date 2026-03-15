@@ -8,19 +8,17 @@ const (
 )
 
 // FixedPersonas returns the persona set that runs in every review regardless of spec content.
-// Backends are assigned per the spec routing table (section 10.1):
-//   - Codex: independent code review
-//   - Gemini: independent spec/edge-case review
+// Each persona has a single focused mandate to avoid attention-splitting.
 func FixedPersonas() []Persona {
 	return []Persona{
 		{
-			PersonaID:   "security-perf-engineer",
-			DisplayName: "Security & Performance Engineer",
+			PersonaID:   "security-engineer",
+			DisplayName: "Security Engineer",
 			Type:        PersonaFixed,
-			Perspective: "Senior engineer specializing in security threat modeling and performance analysis. " +
-				"Focused on attack surfaces, data flow trust boundaries, resource exhaustion, " +
-				"permission models, and scaling bottlenecks.",
-			Instructions: securityPerfInstructions,
+			Perspective: "Senior security engineer specializing in threat modeling. " +
+				"Focused exclusively on attack surfaces, trust boundaries, authentication, " +
+				"authorization, input validation, secrets handling, and injection vectors.",
+			Instructions: securityInstructions,
 			FocusSections: []string{
 				"Architecture",
 				"Interfaces",
@@ -28,6 +26,21 @@ func FixedPersonas() []Persona {
 			},
 			Backend:   BackendCodex,
 			ModelPref: "gpt-5.4",
+		},
+		{
+			PersonaID:   "performance-engineer",
+			DisplayName: "Performance Engineer",
+			Type:        PersonaFixed,
+			Perspective: "Senior performance engineer focused on resource management and scaling. " +
+				"Evaluates resource bounds, concurrency bottlenecks, failure modes under load, " +
+				"disk/memory/CPU exhaustion paths, and operational degradation patterns.",
+			Instructions: performanceInstructions,
+			FocusSections: []string{
+				"Architecture",
+				"Interfaces",
+			},
+			Backend:   BackendGemini,
+			ModelPref: "gemini-3-pro-preview",
 		},
 		{
 			PersonaID:   "testability-reviewer",
@@ -40,16 +53,31 @@ func FixedPersonas() []Persona {
 			FocusSections: []string{
 				"Verification",
 				"Canonical artifacts",
+			},
+			Backend:   BackendCodex,
+			ModelPref: "gpt-5.4",
+		},
+		{
+			PersonaID:   "architecture-reviewer",
+			DisplayName: "Architecture Reviewer",
+			Type:        PersonaFixed,
+			Perspective: "Senior software architect evaluating component boundaries, data flow design, " +
+				"interface contracts, coupling, cohesion, and overall system consistency. " +
+				"Checks whether the spec's abstractions hold under real-world usage.",
+			Instructions: architectureInstructions,
+			FocusSections: []string{
+				"Architecture",
+				"Canonical artifacts",
 				"Interfaces",
 			},
-			Backend:   BackendGemini,
-			ModelPref: "gemini-3-pro-preview",
+			Backend:   BackendClaude,
+			ModelPref: "opus",
 		},
 	}
 }
 
 const findingOutputFormat = `For each issue, produce a JSON finding with:
-- finding_id: short unique ID (e.g., "sec-001", "test-001")
+- finding_id: short unique ID (e.g., "sec-001", "perf-001", "test-001", "arch-001")
 - severity: one of "critical", "significant", "minor"
 - category: short category label
 - section: which spec section
@@ -70,21 +98,35 @@ Output your findings as a JSON object with this schema:
   "schema_version": 3
 }`
 
-const securityPerfInstructions = `Review the technical specification from the perspective of a security and performance engineer.
+const securityInstructions = `Review the technical specification ONLY for security concerns.
 
 Focus areas:
 1. AUTHENTICATION & AUTHORIZATION: Are trust boundaries explicit? Are inter-component communications authenticated? Are permissions least-privilege?
-2. DATA INTEGRITY: Can data be corrupted, tampered with, or lost? Are there race conditions in file access?
-3. INPUT VALIDATION: Are all external inputs validated? Are there injection vectors?
-4. RESOURCE BOUNDS: Are there unbounded loops, allocations, or file handles? What happens under load?
-5. SECRETS MANAGEMENT: Are tokens, keys, or credentials handled safely? Are they ever logged or persisted in plaintext?
-6. FAILURE MODES: What happens when dependencies fail? Are error paths safe?
+2. DATA INTEGRITY: Can data be tampered with or forged? Are there TOCTOU races?
+3. INPUT VALIDATION: Are all external inputs validated? Are there injection vectors (shell, path traversal, JSON)?
+4. SECRETS MANAGEMENT: Are tokens, keys, or credentials handled safely? Are they ever logged or persisted in plaintext?
+5. TRUST BOUNDARIES: Where does trusted input end and untrusted input begin? Are those boundaries documented?
 
-Do NOT flag style issues or naming conventions. Focus only on security and performance concerns.
+Do NOT flag performance issues, style concerns, or test coverage gaps — those are other reviewers' responsibilities.
+
+For each finding, indicate whether it is relevant NOW (current implementation phase) or FUTURE (only matters when later phases are built). This helps the judge prioritize.
 
 ` + findingOutputFormat
 
-const testabilityInstructions = `Review the technical specification from the perspective of a test design architect.
+const performanceInstructions = `Review the technical specification ONLY for performance and resource management concerns.
+
+Focus areas:
+1. RESOURCE BOUNDS: Are there unbounded loops, allocations, or file handles? What happens when limits are hit?
+2. SCALING BOTTLENECKS: What breaks at 10x, 100x scale? Are there O(n^2) paths?
+3. FAILURE UNDER LOAD: What happens when dependencies are slow, disk is full, or memory is constrained?
+4. CONCURRENCY: Are concurrent operations safe? Are there lock contention points?
+5. OPERATIONAL COST: Are there operations that repeat unnecessarily (re-verification, redundant I/O)?
+
+Do NOT flag security vulnerabilities, test coverage, or architectural concerns — those are other reviewers' responsibilities.
+
+` + findingOutputFormat
+
+const testabilityInstructions = `Review the technical specification ONLY for testability and verification concerns.
 
 Focus areas:
 1. ACCEPTANCE CRITERIA: Is every requirement verifiable? Are pass/fail conditions unambiguous?
@@ -94,6 +136,20 @@ Focus areas:
 5. COVERAGE GAPS: Are there requirements with no clear verification strategy?
 6. REGRESSION SAFETY: Are there invariants that should be continuously verified?
 
-Do NOT flag implementation details or suggest specific test frameworks. Focus on whether the spec enables comprehensive testing.
+Do NOT flag security issues, performance concerns, or architectural decisions — those are other reviewers' responsibilities.
+
+` + findingOutputFormat
+
+const architectureInstructions = `Review the technical specification ONLY for architectural soundness.
+
+Focus areas:
+1. COMPONENT BOUNDARIES: Are responsibilities clearly separated? Is there unnecessary coupling?
+2. DATA FLOW: Is data ownership clear? Are there implicit shared-state dependencies?
+3. INTERFACE CONTRACTS: Are contracts between components explicit and complete? Are error contracts defined?
+4. CONSISTENCY: Do different parts of the spec contradict each other? Are naming conventions consistent?
+5. EXTENSIBILITY: Can the system evolve without breaking existing contracts? Are extension points identified?
+6. MISSING ABSTRACTIONS: Are there repeated patterns that should be unified? Are there abstractions that don't carry their weight?
+
+Do NOT flag security vulnerabilities, performance bottlenecks, or test strategies — those are other reviewers' responsibilities.
 
 ` + findingOutputFormat

@@ -7,8 +7,8 @@ import (
 
 func TestFixedPersonasReturnsExpectedSet(t *testing.T) {
 	personas := FixedPersonas()
-	if len(personas) != 2 {
-		t.Fatalf("got %d fixed personas, want 2", len(personas))
+	if len(personas) != 4 {
+		t.Fatalf("got %d fixed personas, want 4", len(personas))
 	}
 
 	ids := make(map[string]bool)
@@ -31,24 +31,32 @@ func TestFixedPersonasReturnsExpectedSet(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{"security-perf-engineer", "testability-reviewer"} {
+	for _, want := range []string{"security-engineer", "performance-engineer", "testability-reviewer", "architecture-reviewer"} {
 		if !ids[want] {
 			t.Errorf("missing expected persona: %s", want)
 		}
 	}
 }
 
-func TestFixedPersonasUseDistinctBackends(t *testing.T) {
+func TestFixedPersonasUseAllBackends(t *testing.T) {
 	personas := FixedPersonas()
-	backends := make(map[string]string)
+	backends := make(map[string]bool)
 	for _, p := range personas {
-		backends[p.PersonaID] = p.Backend
+		backends[p.Backend] = true
 	}
-	if backends["security-perf-engineer"] != BackendCodex {
-		t.Errorf("security-perf-engineer backend = %s, want %s", backends["security-perf-engineer"], BackendCodex)
+	for _, want := range []string{BackendClaude, BackendCodex, BackendGemini} {
+		if !backends[want] {
+			t.Errorf("no persona uses backend %s", want)
+		}
 	}
-	if backends["testability-reviewer"] != BackendGemini {
-		t.Errorf("testability-reviewer backend = %s, want %s", backends["testability-reviewer"], BackendGemini)
+}
+
+func TestFixedPersonasHaveFocusedInstructions(t *testing.T) {
+	personas := FixedPersonas()
+	for _, p := range personas {
+		if !strings.Contains(p.Instructions, "Do NOT flag") {
+			t.Errorf("persona %s instructions missing scope boundary ('Do NOT flag')", p.PersonaID)
+		}
 	}
 }
 
