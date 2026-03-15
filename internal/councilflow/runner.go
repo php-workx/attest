@@ -70,9 +70,10 @@ func replaceArgValue(args []string, flag, value string) []string {
 
 // Runner executes council reviews for a technical spec.
 type Runner struct {
-	OutputDir  string // directory to write review artifacts
-	TimeoutSec int    // per-reviewer timeout in seconds
-	Force      bool   // re-run all reviewers even if cached results exist
+	OutputDir   string // directory to write review artifacts
+	TimeoutSec  int    // per-reviewer timeout in seconds
+	Force       bool   // re-run all reviewers even if cached results exist
+	EnableNudge bool   // enable nudge pass (disabled by default — needs session resume for quality)
 }
 
 // NewRunner creates a runner with defaults.
@@ -163,6 +164,10 @@ func (r *Runner) runSingleReview(ctx context.Context, spec string, round int, pe
 	review, err := parseReviewOutput(output)
 	if err != nil {
 		return nil, fmt.Errorf("parse initial review: %w", err)
+	}
+
+	if !r.EnableNudge {
+		return review, nil
 	}
 
 	// Nudge pass — send follow-up to go deeper.
