@@ -68,6 +68,14 @@ func replaceArgValue(args []string, flag, value string) []string {
 	return append(args, flag, value)
 }
 
+// InvokeFn is the function signature for invoking a CLI backend.
+// Tests replace InvokeFunc with a stub that returns predetermined responses.
+type InvokeFn func(ctx context.Context, backend *CLIBackend, prompt string, timeoutSec int) (string, error)
+
+// InvokeFunc is the package-level backend invocation function.
+// Replace in tests with a stub to avoid real CLI calls.
+var InvokeFunc InvokeFn = invokeBackend
+
 // Runner executes council reviews for a technical spec.
 type Runner struct {
 	OutputDir   string // directory to write review artifacts
@@ -197,7 +205,7 @@ func (r *Runner) runSingleReview(ctx context.Context, spec string, round int, pe
 	})
 
 	// Initial review.
-	output, err := invokeBackend(ctx, backend, prompt, r.TimeoutSec)
+	output, err := InvokeFunc(ctx, backend, prompt, r.TimeoutSec)
 	if err != nil {
 		return nil, fmt.Errorf("initial review: %w", err)
 	}
@@ -213,7 +221,7 @@ func (r *Runner) runSingleReview(ctx context.Context, spec string, round int, pe
 
 	// Nudge pass — send follow-up to go deeper.
 	nudgePrompt := prompt + "\n\n---\n\nPrevious output:\n```json\n" + output + "\n```\n\n" + BuildNudgePrompt(persona)
-	nudgeOutput, nudgeErr := invokeBackend(ctx, backend, nudgePrompt, r.TimeoutSec)
+	nudgeOutput, nudgeErr := InvokeFunc(ctx, backend, nudgePrompt, r.TimeoutSec)
 	if nudgeErr != nil {
 		return review, nil //nolint:nilerr // nudge is best-effort; initial review is valid
 	}

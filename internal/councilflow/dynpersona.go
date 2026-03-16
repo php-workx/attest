@@ -28,7 +28,7 @@ func GeneratePersonas(ctx context.Context, spec, outputDir string) ([]Persona, e
 	fmt.Println("  generating dynamic personas ...")
 
 	backend := KnownBackends[BackendClaude]
-	output, err := invokeBackend(ctx, &backend, prompt, 300)
+	output, err := InvokeFunc(ctx, &backend, prompt, 300)
 	if err != nil {
 		return nil, fmt.Errorf("invoke persona generator: %w", err)
 	}

@@ -58,23 +58,23 @@ func RunJudge(ctx context.Context, spec string, round int, reviews []ReviewOutpu
 	// Filter to reviews with findings worth judging.
 	var judgeable []ReviewOutput
 	for i := range reviews {
-		if len(reviews[i].Findings) == 0 {
-			fmt.Printf("  [round %d] judge: skip %s (no findings)\n", round, reviews[i].PersonaID)
+		review := &reviews[i]
+		if len(review.Findings) == 0 {
+			fmt.Printf("  [round %d] judge: skip %s (no findings)\n", round, review.PersonaID)
 			continue
 		}
-		// Skip reviews with only minor findings.
 		hasNonMinor := false
-		for j := range reviews[i].Findings {
-			if reviews[i].Findings[j].Severity != "minor" {
+		for j := range review.Findings {
+			if review.Findings[j].Severity != "minor" {
 				hasNonMinor = true
 				break
 			}
 		}
 		if !hasNonMinor {
-			fmt.Printf("  [round %d] judge: skip %s (minor only)\n", round, reviews[i].PersonaID)
+			fmt.Printf("  [round %d] judge: skip %s (minor only)\n", round, review.PersonaID)
 			continue
 		}
-		judgeable = append(judgeable, reviews[i])
+		judgeable = append(judgeable, *review)
 	}
 
 	fmt.Printf("  [round %d] judge: %d reviewers to process (parallel) ...\n", round, len(judgeable))
@@ -217,7 +217,7 @@ func resolveConflicts(ctx context.Context, spec string, edits []SpecEdit, output
 	_ = os.WriteFile(promptPath, []byte(b.String()), 0o644)
 
 	fmt.Printf("  [judge] resolving %d conflicts ...\n", len(edits))
-	output, err := invokeBackend(ctx, &cfg.Backend, b.String(), cfg.TimeoutSec)
+	output, err := InvokeFunc(ctx, &cfg.Backend, b.String(), cfg.TimeoutSec)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +255,7 @@ func judgeOneReview(ctx context.Context, spec string, round int, review *ReviewO
 	promptPath := filepath.Join(outputDir, fmt.Sprintf("judge-prompt-%s.md", review.PersonaID))
 	_ = os.WriteFile(promptPath, []byte(prompt), 0o644)
 
-	output, err := invokeBackend(ctx, &cfg.Backend, prompt, cfg.TimeoutSec)
+	output, err := InvokeFunc(ctx, &cfg.Backend, prompt, cfg.TimeoutSec)
 	if err != nil {
 		return judgeDecision{personaID: review.PersonaID, err: err}
 	}
