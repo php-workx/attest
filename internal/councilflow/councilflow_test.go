@@ -587,6 +587,62 @@ func TestParsePersonaGenerationOutputRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestParseAnnotationsBasic(t *testing.T) {
+	md := `# Spec
+
+## 1. Architecture
+Some text here.
+
+@@ This needs more detail about the data flow.
+
+More text.
+
+@@ Another concern about error handling.
+`
+	annotations := ParseAnnotations(md)
+	if len(annotations) != 2 {
+		t.Fatalf("got %d annotations, want 2", len(annotations))
+	}
+	if annotations[0].Line != 6 {
+		t.Errorf("annotation[0] line = %d, want 6", annotations[0].Line)
+	}
+	if annotations[0].Text != "This needs more detail about the data flow." {
+		t.Errorf("annotation[0] text = %q", annotations[0].Text)
+	}
+	if annotations[0].Context != "" {
+		t.Errorf("annotation[0] context = %q, want empty (preceding line is blank)", annotations[0].Context)
+	}
+}
+
+func TestParseAnnotationsIgnoresCodeBlocks(t *testing.T) {
+	md := "# Spec\n\n```\n@@ this is inside a code block\n```\n\n@@ this is real\n"
+	annotations := ParseAnnotations(md)
+	if len(annotations) != 1 {
+		t.Fatalf("got %d annotations, want 1", len(annotations))
+	}
+	if annotations[0].Text != "this is real" {
+		t.Errorf("annotation text = %q, want 'this is real'", annotations[0].Text)
+	}
+}
+
+func TestParseAnnotationsEmptyDoc(t *testing.T) {
+	if len(ParseAnnotations("")) != 0 {
+		t.Error("empty doc should have no annotations")
+	}
+	if len(ParseAnnotations("# Spec\nNo annotations here.\n")) != 0 {
+		t.Error("doc without @@ should have no annotations")
+	}
+}
+
+func TestHasUnresolvedAnnotations(t *testing.T) {
+	if HasUnresolvedAnnotations("# Spec\nClean.\n") {
+		t.Error("clean doc should not have unresolved annotations")
+	}
+	if !HasUnresolvedAnnotations("# Spec\n@@ Fix this.\n") {
+		t.Error("doc with @@ should have unresolved annotations")
+	}
+}
+
 func TestTruncateForError(t *testing.T) {
 	short := "hello"
 	if got := truncateForError(short, 10); got != short {

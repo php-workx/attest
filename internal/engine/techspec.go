@@ -222,6 +222,12 @@ func (e *Engine) ApproveTechnicalSpec(ctx context.Context, approvedBy string) (*
 		return nil, fmt.Errorf("technical spec review hash does not match current artifact")
 	}
 
+	// Block approval if the spec contains unresolved @@ annotations.
+	annotations := councilflow.ParseAnnotations(string(data))
+	if len(annotations) > 0 {
+		return nil, fmt.Errorf("cannot approve: %s", councilflow.FormatAnnotationsAsFindings(annotations))
+	}
+
 	approval := &state.ArtifactApproval{
 		SchemaVersion: "0.1",
 		RunID:         filepathBase(e.RunDir.Root),
