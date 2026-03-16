@@ -102,6 +102,9 @@ func parsePersonaGenerationOutput(raw string) ([]Persona, error) {
 	// Try parsing as array first.
 	var personas []Persona
 	if err := json.Unmarshal([]byte(jsonStr), &personas); err == nil {
+		if len(personas) == 0 {
+			return nil, fmt.Errorf("%w: model returned empty persona list", ErrPersonaGenerationFailed)
+		}
 		for i := range personas {
 			personas[i].Type = PersonaDynamic
 			personas[i].GeneratedBy = "judge"

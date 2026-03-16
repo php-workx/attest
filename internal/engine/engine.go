@@ -204,6 +204,10 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 
 // VerifyTask runs the deterministic verification pipeline for a single task (spec section 11.3).
 func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state.CompletionReport) (*state.VerifierResult, error) {
+	if report == nil || report.AttemptID == "" {
+		return nil, fmt.Errorf("verify task: attempt_id is required for per-attempt report isolation")
+	}
+
 	artifact, err := e.RunDir.ReadArtifact()
 	if err != nil {
 		return nil, fmt.Errorf(errReadArtifact, err)

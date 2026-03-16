@@ -118,7 +118,8 @@
 - Each JSON artifact (`personas.json`, `review-*.json`, `consolidation.json`, `rejection-log.json`) MUST have a corresponding Go struct with JSON tags that serves as the executable schema definition.
 - Artifact write functions MUST validate against these structs before writing (marshalling enforces required fields).
 - Cross-artifact invariants: every `finding_id` in `rejection-log.json` MUST reference an existing finding from a `review-*.json`; `spec-hash.txt` MUST match the SHA-256 of the spec bytes that were reviewed; `review-*.json` MUST have `schema_version: 3`.
-- Test fixtures MUST include golden JSON files for each artifact type to validate schema compliance in CI. computed over: spec content, persona definition, backend identifier, model selection, prompt schema version, and review schema version. All inputs are concatenated in a deterministic order before hashing.
+- Test fixtures MUST include golden JSON files for each artifact type to validate schema compliance in CI.
+- Cache key: computed over spec content, persona definition, backend identifier, model selection, prompt schema version, and review schema version. All inputs are concatenated in a deterministic order before hashing.
   - atomicity: A review artifact is cache-eligible only after it is fully written to a temporary file and atomically renamed into place. The runner MUST prevent concurrent writes for the same run-id/round/persona cache key via file-based coordination (e.g., lock file or atomic rename).
 
 ## 4. Interfaces
