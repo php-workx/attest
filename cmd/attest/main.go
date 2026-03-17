@@ -269,19 +269,34 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 	}
 }
 
-// cmdTechSpecReviewFromFile creates a temporary run, drafts the spec, and runs review in one step.
+// cmdTechSpecReviewFromFile creates or reuses a run for reviewing a spec file.
+// If a previous run exists with the same spec hash, it is reused (reviews/personas cached).
 func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags []string) error {
+	// Hash the spec to find an existing run.
+	specData, err := os.ReadFile(fromPath) //nolint:gosec // fromPath is user-provided CLI input, path traversal is intentional
+	if err != nil {
+		return fmt.Errorf("read spec: %w", err)
+	}
+	specHash := state.SHA256Bytes(specData)
+
+	// Search for existing run with matching spec.
+	if runDir, runID := findRunBySpecHash(wd, specHash); runDir != nil {
+		fmt.Printf("Reusing run: %s (spec unchanged)\n", runID)
+		eng := engine.New(runDir, wd)
+		return cmdTechSpecReview(ctx, eng, flags, true)
+	}
+
+	// Create new run.
 	runID := fmt.Sprintf("run-%d", time.Now().Unix())
 	runDir := state.NewRunDir(wd, runID)
 	if err := runDir.Init(); err != nil {
 		return fmt.Errorf("init run dir: %w", err)
 	}
 
-	// Write minimal run artifact (requirements are optional for council-only review).
 	artifact := &state.RunArtifact{
 		SchemaVersion: "0.1",
 		RunID:         runID,
-		SourceSpecs:   []state.SourceSpec{{Path: fromPath}},
+		SourceSpecs:   []state.SourceSpec{{Path: fromPath, Fingerprint: specHash}},
 	}
 	if err := runDir.WriteArtifact(artifact); err != nil {
 		return fmt.Errorf("write artifact: %w", err)
@@ -298,13 +313,40 @@ func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags [
 	eng := engine.New(runDir, wd)
 	fmt.Printf("Run created: %s\n", runID)
 
-	// Draft the tech spec into the run.
 	if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
 		return fmt.Errorf("draft: %w", err)
 	}
 
-	// Run the review.
 	return cmdTechSpecReview(ctx, eng, flags, true)
+}
+
+// findRunBySpecHash scans existing runs for one whose source spec matches the given hash.
+// Returns the most recent matching run, or nil if none found.
+func findRunBySpecHash(wd, specHash string) (runDir *state.RunDir, runID string) {
+	runsDir := filepath.Join(wd, ".attest", "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return nil, ""
+	}
+
+	// Iterate newest first (entries are sorted alphabetically; run-<timestamp> sorts chronologically).
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if !e.IsDir() {
+			continue
+		}
+		runDir := state.NewRunDir(wd, e.Name())
+		artifact, err := runDir.ReadArtifact()
+		if err != nil {
+			continue
+		}
+		for _, src := range artifact.SourceSpecs {
+			if src.Fingerprint == specHash {
+				return runDir, e.Name()
+			}
+		}
+	}
+	return nil, ""
 }
 
 func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string, externalSpec bool) error {
