@@ -400,16 +400,11 @@ func parseReviewOutput(raw string) (*ReviewOutput, error) {
 }
 
 func extractJSON(s string) string {
-	if idx := strings.Index(s, "```json"); idx >= 0 {
-		start := idx + len("```json")
-		if end := strings.Index(s[start:], "```"); end >= 0 {
-			return strings.TrimSpace(s[start : start+end])
-		}
-	}
-	if idx := strings.Index(s, "```"); idx >= 0 {
-		start := idx + len("```")
-		if end := strings.Index(s[start:], "```"); end >= 0 {
-			return strings.TrimSpace(s[start : start+end])
+	// Try code fence extraction, but validate the result parses as JSON.
+	// Code fences can break when JSON values contain backticks (e.g., spec markdown).
+	if candidate := extractFromCodeFence(s); candidate != "" {
+		if json.Valid([]byte(candidate)) {
+			return candidate
 		}
 	}
 	// String-aware bracket matching for JSON objects and arrays.
@@ -425,6 +420,22 @@ func extractJSON(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+func extractFromCodeFence(s string) string {
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		start := idx + len("```json")
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+	}
+	if idx := strings.Index(s, "```"); idx >= 0 {
+		start := idx + len("```")
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+	}
+	return ""
 }
 
 func extractJSONBlock(s string, idx int) string {
