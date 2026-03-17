@@ -27,6 +27,7 @@ type JudgeConfig struct {
 	Backend    CLIBackend
 	TimeoutSec int
 	Mode       ReviewMode
+	StaggerSec int
 }
 
 // DefaultJudgeConfig returns a config targeting Claude Opus with extended thinking.
@@ -56,33 +57,17 @@ func RunJudge(ctx context.Context, spec string, round int, reviews []ReviewOutpu
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
 
-	// Filter to reviews with findings worth judging.
-	var judgeable []ReviewOutput
-	for i := range reviews {
-		review := &reviews[i]
-		if len(review.Findings) == 0 {
-			fmt.Printf("  [round %d] judge: skip %s (no findings)\n", round, review.PersonaID)
-			continue
-		}
-		hasNonMinor := false
-		for j := range review.Findings {
-			if review.Findings[j].Severity != "minor" {
-				hasNonMinor = true
-				break
-			}
-		}
-		if !hasNonMinor {
-			fmt.Printf("  [round %d] judge: skip %s (minor only)\n", round, review.PersonaID)
-			continue
-		}
-		judgeable = append(judgeable, *review)
-	}
+	judgeable := filterJudgeableReviews(reviews, round)
 
 	fmt.Printf("  [round %d] judge: %d reviewers to process (parallel) ...\n", round, len(judgeable))
 
 	// Phase 1: Parallel judgment — each reviewer's findings judged independently.
 	ch := make(chan judgeDecision, len(judgeable))
 	for i := range judgeable {
+		if i > 0 && cfg.StaggerSec > 0 {
+			fmt.Printf("  [round %d] judge stagger: waiting %ds ...\n", round, cfg.StaggerSec)
+			time.Sleep(time.Duration(cfg.StaggerSec) * time.Second)
+		}
 		go func(review ReviewOutput) {
 			decision := judgeOneReview(ctx, spec, round, &review, outputDir, &cfg)
 			ch <- decision
@@ -247,6 +232,30 @@ func resolveConflicts(ctx context.Context, spec string, edits []SpecEdit, output
 	}
 
 	return &conflictResult{spec: updatedSpec, applied: applied, stillFailed: stillFailed}, nil
+}
+
+func filterJudgeableReviews(reviews []ReviewOutput, round int) []ReviewOutput {
+	var judgeable []ReviewOutput
+	for i := range reviews {
+		review := &reviews[i]
+		if len(review.Findings) == 0 {
+			fmt.Printf("  [round %d] judge: skip %s (no findings)\n", round, review.PersonaID)
+			continue
+		}
+		hasNonMinor := false
+		for j := range review.Findings {
+			if review.Findings[j].Severity != "minor" {
+				hasNonMinor = true
+				break
+			}
+		}
+		if !hasNonMinor {
+			fmt.Printf("  [round %d] judge: skip %s (minor only)\n", round, review.PersonaID)
+			continue
+		}
+		judgeable = append(judgeable, *review)
+	}
+	return judgeable
 }
 
 func judgeOneReview(ctx context.Context, spec string, round int, review *ReviewOutput, outputDir string, cfg *JudgeConfig) judgeDecision {

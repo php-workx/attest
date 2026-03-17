@@ -20,12 +20,14 @@ type CouncilConfig struct {
 	SkipJudge       bool       // skip judge consolidation (review-only mode)
 	SkipDynPersonas bool       // skip dynamic persona generation (fixed personas only)
 	SkipApproval    bool       // skip interactive persona approval
+	StaggerDelay    int        // seconds between launching parallel reviewers/judges (default: 15)
 }
 
 // DefaultConfig returns a config with sensible defaults.
 func DefaultConfig() CouncilConfig {
 	return CouncilConfig{
-		Rounds: 2,
+		Rounds:       2,
+		StaggerDelay: 15, // seconds between parallel launches to avoid rate limits
 	}
 }
 
@@ -124,6 +126,7 @@ func executeRound(ctx context.Context, round int, roundDir, spec string, priorFi
 	runner.Force = cfg.Force
 	runner.Mode = cfg.Mode
 	runner.SpecPath = cfg.SpecPath
+	runner.StaggerSec = cfg.StaggerDelay
 
 	if cfg.DryRun {
 		return "", writeDryRunPrompts(roundDir, spec, round, personas, priorFindings, cfg.CodebaseContext)
@@ -161,6 +164,7 @@ func executeRound(ctx context.Context, round int, roundDir, spec string, priorFi
 	t0 = time.Now()
 	judgeCfg := DefaultJudgeConfig()
 	judgeCfg.Mode = cfg.Mode
+	judgeCfg.StaggerSec = cfg.StaggerDelay
 	consolidation, judgeErr := RunJudge(ctx, spec, round, roundResult.Reviews, roundDir, judgeCfg)
 	if judgeErr != nil {
 		return "", fmt.Errorf("round %d judge: %w", round, judgeErr)

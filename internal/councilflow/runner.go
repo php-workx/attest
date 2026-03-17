@@ -112,6 +112,7 @@ type Runner struct {
 	TimeoutSec  int        // per-reviewer timeout in seconds
 	Mode        ReviewMode // review tone and strictness
 	SpecPath    string     // absolute path to spec file (if set, reviewers read from file instead of inline)
+	StaggerSec  int        // seconds between launching parallel reviewers (0 = no stagger)
 	Force       bool       // re-run all reviewers even if cached results exist
 	EnableNudge bool       // enable nudge pass (disabled by default — needs session resume for quality)
 }
@@ -196,7 +197,11 @@ type reviewResult struct {
 func runParallelReviews(ctx context.Context, r *Runner, spec string, round int, pending []pendingReview, priorFindings []ReviewOutput, codebaseCtx string) []ReviewOutput {
 	ch := make(chan reviewResult, len(pending))
 
-	for _, p := range pending {
+	for i, p := range pending {
+		if i > 0 && r.StaggerSec > 0 {
+			fmt.Printf("  [round %d] stagger: waiting %ds before next reviewer ...\n", round, r.StaggerSec)
+			time.Sleep(time.Duration(r.StaggerSec) * time.Second)
+		}
 		go func(pr pendingReview) {
 			backend := BackendFor(pr.persona)
 			fmt.Printf("  [round %d] reviewing: %s (via %s) ...\n", round, pr.persona.DisplayName, backend.Command)
