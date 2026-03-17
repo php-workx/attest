@@ -111,6 +111,7 @@ type Runner struct {
 	OutputDir   string     // directory to write review artifacts
 	TimeoutSec  int        // per-reviewer timeout in seconds
 	Mode        ReviewMode // review tone and strictness
+	SpecPath    string     // absolute path to spec file (if set, reviewers read from file instead of inline)
 	Force       bool       // re-run all reviewers even if cached results exist
 	EnableNudge bool       // enable nudge pass (disabled by default — needs session resume for quality)
 }
@@ -229,6 +230,7 @@ func runParallelReviews(ctx context.Context, r *Runner, spec string, round int, 
 func (r *Runner) runSingleReview(ctx context.Context, spec string, round int, persona *Persona, backend *CLIBackend, priorFindings []ReviewOutput, codebaseCtx string) (*ReviewOutput, error) {
 	prompt := BuildReviewPrompt(&PromptContext{
 		Spec:            spec,
+		SpecPath:        r.SpecPath,
 		Persona:         *persona,
 		Round:           round,
 		Mode:            r.Mode,

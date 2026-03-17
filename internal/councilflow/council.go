@@ -13,6 +13,7 @@ import (
 type CouncilConfig struct {
 	Rounds          int        // number of review rounds (default: 2)
 	Mode            ReviewMode // review tone and strictness (default: standard)
+	SpecPath        string     // absolute path to spec file (reviewers read from file instead of inline)
 	CodebaseContext string     // optional codebase context for reviewers
 	DryRun          bool       // generate prompts without executing
 	Force           bool       // re-run all reviewers even if cached results exist
@@ -122,6 +123,7 @@ func executeRound(ctx context.Context, round int, roundDir, spec string, priorFi
 	runner := NewRunner(roundDir)
 	runner.Force = cfg.Force
 	runner.Mode = cfg.Mode
+	runner.SpecPath = cfg.SpecPath
 
 	if cfg.DryRun {
 		return "", writeDryRunPrompts(roundDir, spec, round, personas, priorFindings, cfg.CodebaseContext)
