@@ -256,7 +256,7 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 		fmt.Printf("Technical spec recorded: %s\n", runDir.TechnicalSpec())
 		return nil
 	case commandReview:
-		return cmdTechSpecReview(ctx, eng, remaining)
+		return cmdTechSpecReview(ctx, eng, remaining, false)
 	case commandApprove:
 		approval, err := eng.ApproveTechnicalSpec(ctx, "user")
 		if err != nil {
@@ -304,10 +304,10 @@ func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags [
 	}
 
 	// Run the review.
-	return cmdTechSpecReview(ctx, eng, flags)
+	return cmdTechSpecReview(ctx, eng, flags, true)
 }
 
-func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) error {
+func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string, externalSpec bool) error {
 	structuralOnly := false
 	dryRun := false
 	force := false
@@ -344,19 +344,21 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string) 
 		}
 	}
 
-	// Structural review always runs first (pre-flight).
-	review, err := eng.ReviewTechnicalSpec(ctx)
-	if err != nil {
-		return err
-	}
-	data, _ := json.MarshalIndent(review, "", "  ")
-	fmt.Println(string(data))
+	// Structural review (pre-flight). Skipped for external specs that don't follow our template.
+	if !externalSpec {
+		review, err := eng.ReviewTechnicalSpec(ctx)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(review, "", "  ")
+		fmt.Println(string(data))
 
-	if structuralOnly {
-		return nil
-	}
-	if review.Status != state.ReviewPass {
-		return fmt.Errorf("structural review failed — fix before running council")
+		if structuralOnly {
+			return nil
+		}
+		if review.Status != state.ReviewPass {
+			return fmt.Errorf("structural review failed — fix before running council")
+		}
 	}
 
 	cfg := councilflow.DefaultConfig()
