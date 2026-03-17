@@ -29,10 +29,31 @@ var KnownBackends = map[string]CLIBackend{
 }
 
 func resolveCommand(name string) string {
+	// Try standard PATH first.
 	if path, err := exec.LookPath(name); err == nil {
 		return path
 	}
-	return name // fallback to bare name
+	// Search common tool directories not always in PATH.
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		candidates := []string{
+			filepath.Join(home, ".local", "bin", name),
+			filepath.Join(home, "go", "bin", name),
+		}
+		// Check nvm node directories.
+		nvmDir := filepath.Join(home, ".nvm", "versions", "node")
+		if entries, err := os.ReadDir(nvmDir); err == nil {
+			for _, e := range entries {
+				candidates = append(candidates, filepath.Join(nvmDir, e.Name(), "bin", name))
+			}
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
+		}
+	}
+	return name
 }
 
 // BackendFor returns the CLI backend for a persona.
