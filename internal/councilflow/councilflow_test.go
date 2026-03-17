@@ -643,6 +643,94 @@ func TestHasUnresolvedAnnotations(t *testing.T) {
 	}
 }
 
+func TestReviewModeDirectivesNonEmpty(t *testing.T) {
+	for _, mode := range []ReviewMode{ReviewMVP, ReviewStandard, ReviewProduction} {
+		if ReviewModeDirective(mode) == "" {
+			t.Errorf("ReviewModeDirective(%s) is empty", mode)
+		}
+		if JudgeModeDirective(mode) == "" {
+			t.Errorf("JudgeModeDirective(%s) is empty", mode)
+		}
+		if PersonaModeDirective(mode) == "" {
+			t.Errorf("PersonaModeDirective(%s) is empty", mode)
+		}
+	}
+}
+
+func TestReviewModeDirectivesDistinct(t *testing.T) {
+	mvp := ReviewModeDirective(ReviewMVP)
+	std := ReviewModeDirective(ReviewStandard)
+	prod := ReviewModeDirective(ReviewProduction)
+	if mvp == std || std == prod || mvp == prod {
+		t.Error("review mode directives should be distinct")
+	}
+}
+
+func TestMVPModeInReviewPrompt(t *testing.T) {
+	persona := FixedPersonas()[0]
+	prompt := BuildReviewPrompt(&PromptContext{
+		Spec: "# Spec\n", Persona: persona, Round: 1, Mode: ReviewMVP,
+	})
+	for _, want := range []string{"MVP", "block implementation", "Do NOT suggest improvements"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("MVP review prompt missing %q", want)
+		}
+	}
+}
+
+func TestProductionModeInReviewPrompt(t *testing.T) {
+	persona := FixedPersonas()[0]
+	prompt := BuildReviewPrompt(&PromptContext{
+		Spec: "# Spec\n", Persona: persona, Round: 1, Mode: ReviewProduction,
+	})
+	for _, want := range []string{"Production", "thorough and adversarial", "10x scale"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("production review prompt missing %q", want)
+		}
+	}
+}
+
+func TestStandardModeIsDefault(t *testing.T) {
+	persona := FixedPersonas()[0]
+	prompt := BuildReviewPrompt(&PromptContext{
+		Spec: "# Spec\n", Persona: persona, Round: 1,
+	})
+	if !strings.Contains(prompt, "Standard") {
+		t.Error("empty mode should produce standard directive")
+	}
+}
+
+func TestMVPModeInJudgePrompt(t *testing.T) {
+	reviews := []ReviewOutput{{PersonaID: "test", Verdict: VerdictWarn, Findings: []Finding{{FindingID: "t-001", Severity: "significant"}}}}
+	prompt := buildJudgePrompt("# Spec\n", 1, reviews, ReviewMVP)
+	for _, want := range []string{"MVP", "REJECT findings about future phases", "goal is to ship"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("MVP judge prompt missing %q", want)
+		}
+	}
+}
+
+func TestProductionModeInJudgePrompt(t *testing.T) {
+	reviews := []ReviewOutput{{PersonaID: "test", Verdict: VerdictWarn, Findings: []Finding{{FindingID: "t-001", Severity: "significant"}}}}
+	prompt := buildJudgePrompt("# Spec\n", 1, reviews, ReviewProduction)
+	for _, want := range []string{"Production", "APPLY findings at all severity levels", "goal is completeness"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("production judge prompt missing %q", want)
+		}
+	}
+}
+
+func TestValidReviewModes(t *testing.T) {
+	for _, mode := range []ReviewMode{"mvp", "standard", "production"} {
+		if !ValidReviewModes[mode] {
+			t.Errorf("mode %q should be valid", mode)
+		}
+	}
+	if ValidReviewModes["turbo"] {
+		t.Error("invalid mode should not be accepted")
+	}
+}
+
 func TestTruncateForError(t *testing.T) {
 	short := "hello"
 	if got := truncateForError(short, 10); got != short {
