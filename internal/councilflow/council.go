@@ -3,6 +3,7 @@ package councilflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -159,6 +160,23 @@ func executeRound(ctx context.Context, round int, roundDir, spec string, priorFi
 	// Stage: judge consolidation.
 	if cfg.SkipJudge || totalFindings == 0 {
 		return "", nil
+	}
+
+	// Check for cached judge output.
+	consolidationPath := filepath.Join(roundDir, "consolidation.json")
+	if !cfg.Force {
+		if cached, cErr := loadCachedConsolidation(consolidationPath); cErr == nil {
+			result.Consolidations = append(result.Consolidations, *cached)
+			fmt.Printf("  [timing] judge: cached (%d applied, %d rejected)\n", cached.AppliedCount, cached.RejectedCount)
+
+			if cached.UpdatedSpec != "" {
+				specPath := filepath.Join(filepath.Dir(roundDir), fmt.Sprintf("technical-spec-v%d.md", round))
+				result.FinalSpecPath = specPath
+				result.FinalSpec = cached.UpdatedSpec
+				return cached.UpdatedSpec, nil
+			}
+			return "", nil
+		}
 	}
 
 	t0 = time.Now()
@@ -340,6 +358,21 @@ func printFinalSummary(result *CouncilResult, outputBaseDir string) {
 	}
 	fmt.Printf("    %-28s %s\n", "TOTAL", result.TotalDuration.Round(time.Millisecond))
 	fmt.Println()
+}
+
+func loadCachedConsolidation(path string) (*ConsolidationResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var c ConsolidationResult
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	if c.AppliedCount == 0 && c.RejectedCount == 0 && len(c.AppliedEdits) == 0 {
+		return nil, fmt.Errorf("cached consolidation appears empty")
+	}
+	return &c, nil
 }
 
 func maybeApprovePersonas(personas []Persona, cfg CouncilConfig) ([]Persona, error) {
