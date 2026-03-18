@@ -131,7 +131,7 @@ func executeRound(ctx context.Context, round int, roundDir, spec string, priorFi
 	runner.StaggerSec = cfg.StaggerDelay
 
 	if cfg.DryRun {
-		return "", writeDryRunPrompts(roundDir, spec, round, personas, priorFindings, cfg.CodebaseContext)
+		return "", writeDryRunPrompts(roundDir, spec, round, personas, priorFindings, cfg.CodebaseContext, cfg.SpecPath, cfg.Mode)
 	}
 
 	// Stage: reviews.
@@ -230,8 +230,9 @@ func writeChangelog(outputBaseDir string, result *CouncilResult) error {
 		c := &result.Consolidations[i]
 		fmt.Fprintf(&b, "## Round %d\n\n", c.Round)
 		var findingLookup map[string]*Finding
-		if i < len(result.Rounds) {
-			findingLookup = buildFindingLookup(result.Rounds[i].Reviews)
+		roundIdx := c.Round - 1
+		if roundIdx >= 0 && roundIdx < len(result.Rounds) {
+			findingLookup = buildFindingLookup(result.Rounds[roundIdx].Reviews)
 		}
 		sortEditsBySpecPosition(c)
 		writeChangelogEdits(&b, c, findingLookup)
@@ -426,13 +427,15 @@ func buildPersonaSet(ctx context.Context, spec, roundDir string, cfg CouncilConf
 	return append(personas, dynPersonas...), nil
 }
 
-func writeDryRunPrompts(roundDir, spec string, round int, personas []Persona, priorFindings []ReviewOutput, codebaseCtx string) error {
+func writeDryRunPrompts(roundDir, spec string, round int, personas []Persona, priorFindings []ReviewOutput, codebaseCtx, specPath string, mode ReviewMode) error {
 	fmt.Printf("  [dry-run] would review with %d personas\n", len(personas))
 	for i := range personas {
 		prompt := BuildReviewPrompt(&PromptContext{
 			Spec:            spec,
+			SpecPath:        specPath,
 			Persona:         personas[i],
 			Round:           round,
+			Mode:            mode,
 			PriorFindings:   priorFindings,
 			CodebaseContext: codebaseCtx,
 		})
