@@ -185,14 +185,41 @@ func (s *Store) RemoveDep(id, depID string) error {
 	return s.WriteTask(task)
 }
 
+// ReadyTasks returns tasks scoped to a run that are open with all deps satisfied.
+func (s *Store) ReadyTasks(runID string) ([]state.Task, error) {
+	tasks, err := s.ReadTasks(runID)
+	if err != nil {
+		return nil, err
+	}
+	return ReadyFilter(tasks), nil
+}
+
+// BlockedTasks returns tasks scoped to a run that are open with unresolved deps.
+func (s *Store) BlockedTasks(runID string) ([]state.Task, error) {
+	tasks, err := s.ReadTasks(runID)
+	if err != nil {
+		return nil, err
+	}
+	return BlockedFilter(tasks), nil
+}
+
+// DetectCycles finds dependency cycles scoped to a run.
+func (s *Store) DetectCycles(runID string) ([][]string, error) {
+	tasks, err := s.ReadTasks(runID)
+	if err != nil {
+		return nil, err
+	}
+	cycles := DetectCycles(tasks)
+	return cycles, nil
+}
+
 // Link creates a bidirectional link between two tickets.
-func (s *Store) Link(idA, idB string) error {
-	// TODO: implement bidirectional link update
+func (s *Store) Link(_, _ string) error {
 	return fmt.Errorf("Link not yet implemented")
 }
 
 // Unlink removes a bidirectional link.
-func (s *Store) Unlink(idA, idB string) error {
+func (s *Store) Unlink(_, _ string) error {
 	return fmt.Errorf("Unlink not yet implemented")
 }
 
@@ -244,15 +271,42 @@ func (s *Store) withLock(path string, fn func() error) error {
 	return fn()
 }
 
-// atomicWrite writes data to path using temp file + rename.
+// atomicWrite writes data to path using temp file + fsync + rename + dir fsync.
 func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	tmp := path + fmt.Sprintf(".tmp.%d", os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // path is constructed internally, not from user input
+
+	f, err := os.Create(tmp)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// Fsync parent directory for durability.
+	// Fsync parent directory — best-effort, rename already succeeded.
+	d, openErr := os.Open(dir)
+	if openErr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }

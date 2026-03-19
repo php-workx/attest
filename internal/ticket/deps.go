@@ -145,10 +145,14 @@ func sortByPriorityThenID(tasks []state.Task) {
 }
 
 func extractCycle(parent map[string]string, from, to string) []string {
+	// Self-loop: A depends on A.
+	if from == to {
+		return []string{to}
+	}
 	var cycle []string
 	cycle = append(cycle, to)
 	node := from
-	for node != to {
+	for node != to && node != "" {
 		cycle = append(cycle, node)
 		node = parent[node]
 	}

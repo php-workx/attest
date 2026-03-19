@@ -168,6 +168,59 @@ func TestReadTasksScopedToRun(t *testing.T) {
 	}
 }
 
+func TestPartialIDMatchPrefix(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	const testID = "abc-1234"
+	task := testTask()
+	task.TaskID = testID
+	if err := store.WriteTask(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	// Match by prefix "abc-1".
+	got, err := store.ReadTask("abc-1")
+	if err != nil {
+		t.Fatalf("prefix match: %v", err)
+	}
+	if got.TaskID != testID {
+		t.Errorf("prefix match ID = %q, want %q", got.TaskID, testID)
+	}
+}
+
+func TestConcurrentWriteSameTicket(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Create initial ticket.
+	task := testTask()
+	task.TaskID = "shared"
+	if err := store.WriteTask(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	// 10 goroutines updating the same ticket concurrently.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_ = store.UpdateStatus("shared", state.TaskPending, fmt.Sprintf("update-%d", n))
+		}(i)
+	}
+	wg.Wait()
+
+	// Ticket should still be readable and valid.
+	got, err := store.ReadTask("shared")
+	if err != nil {
+		t.Fatalf("ReadTask after concurrent writes: %v", err)
+	}
+	if got.TaskID != "shared" {
+		t.Errorf("TaskID = %q, want shared", got.TaskID)
+	}
+}
+
 func TestConcurrentWritesDifferentTickets(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

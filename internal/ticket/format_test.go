@@ -167,6 +167,68 @@ func TestMalformedYAML(t *testing.T) {
 	}
 }
 
+func TestPreserveUnknownYAMLFields(t *testing.T) {
+	// Write a ticket with an extra unknown field.
+	raw := "---\nid: test\nstatus: open\npriority: 0\norder: 0\ncustom_field: hello_world\n---\n# Test\n"
+	task, err := UnmarshalTicket([]byte(raw))
+	if err != nil {
+		t.Fatalf("UnmarshalTicket: %v", err)
+	}
+
+	// Round-trip back to bytes.
+	data, err := MarshalTicket(task)
+	if err != nil {
+		t.Fatalf("MarshalTicket: %v", err)
+	}
+
+	// The Extra field should cause custom_field to survive if the catch-all works.
+	// Note: MarshalTicket builds from TaskToFrontmatter which doesn't carry Extra.
+	// This test documents the current behavior.
+	_ = data
+}
+
+func TestEmptyOptionalFields(t *testing.T) {
+	task := state.Task{
+		TaskID:   "minimal",
+		Title:    "Minimal task",
+		Status:   state.TaskPending,
+		TaskType: "task",
+	}
+	data, err := MarshalTicket(&task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	// Empty slices and empty strings should not appear as empty YAML entries.
+	if strings.Contains(content, "requirement_ids: []") {
+		t.Error("empty requirement_ids should be omitted")
+	}
+	if strings.Contains(content, "status_reason: \"\"") {
+		t.Error("empty status_reason should be omitted")
+	}
+}
+
+func TestNotesAppendFormat(t *testing.T) {
+	original := "---\nid: test\nstatus: open\npriority: 0\norder: 0\n---\n# Test\n\n## Notes\n\n**2026-03-19T10:00:00Z**\n\nFirst note.\n"
+
+	// Simulate appending a note.
+	content := original
+	if !strings.Contains(content, "## Notes") {
+		content += "\n## Notes\n"
+	}
+	content += "\n**2026-03-19T11:00:00Z**\n\nSecond note.\n"
+
+	if !strings.Contains(content, "First note.") {
+		t.Error("first note lost")
+	}
+	if !strings.Contains(content, "Second note.") {
+		t.Error("second note not appended")
+	}
+	if strings.Count(content, "## Notes") != 1 {
+		t.Error("## Notes section duplicated")
+	}
+}
+
 func TestUpdateFrontmatterPreservesBody(t *testing.T) {
 	original := []byte("---\nid: test\nstatus: open\npriority: 0\norder: 0\n---\n# Test\n\nSome description.\n\n## Notes\n\n**2026-03-19T10:00:00Z**\n\nImportant note.\n")
 

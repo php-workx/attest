@@ -96,7 +96,14 @@ func formatTime(t time.Time) string {
 }
 
 func parseTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339, s)
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		// Try ISO 8601 without timezone (tk sometimes omits 'Z').
+		t, _ = time.Parse("2006-01-02T15:04:05", s)
+	}
 	return t
 }
 
