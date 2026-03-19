@@ -3,6 +3,23 @@ package state
 
 import "time"
 
+// TaskStore abstracts task persistence. Implementations include
+// RunDir (JSON, backward compat) and ticket.Store (Ticket format).
+// Nothing in this package or internal/engine/ imports a specific backend.
+type TaskStore interface {
+	// Run-scoped operations (filter by parent epic).
+	ReadTasks(runID string) ([]Task, error)
+	WriteTasks(runID string, tasks []Task) error
+
+	// Single-task operations.
+	ReadTask(taskID string) (*Task, error)
+	WriteTask(task *Task) error
+	UpdateStatus(taskID string, status TaskStatus, reason string) error
+
+	// Run lifecycle.
+	CreateRun(runID string) error
+}
+
 // RunArtifact is the approved normalized contract for a run (spec section 3.2).
 type RunArtifact struct {
 	SchemaVersion  string          `json:"schema_version"`
