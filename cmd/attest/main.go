@@ -28,12 +28,15 @@ func main() {
 func run(ctx context.Context, args []string, stderr io.Writer) int {
 	if len(args) < 1 {
 		usage(stderr)
-		return 1
+		return 0
 	}
 
 	var err error
 
 	switch args[0] {
+	case "help", "--help", "-h":
+		usage(stderr)
+		return 0
 	case "prepare":
 		err = cmdPrepare(ctx, args[1:])
 	case commandReview:
@@ -76,27 +79,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	return 0
 }
 
-func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `usage: attest <command> [args]
-
-commands:
-  prepare --spec <path> [--spec <path>...]   Ingest specs and create a draft run
-  review <run-id>                            Show the run artifact for review
-  tech-spec <draft|review|approve> ...       Manage run-scoped technical specs
-                                              review --from <path>  (one-step council review)
-                                              review flags: --mode mvp|standard|production --skip-approval --structural-only --dry-run --force --round N
-  plan <draft|review|approve> ...            Manage run-scoped execution plans
-  approve <run-id> [--launch]                 Approve and compile tasks
-  status [<run-id>]                          Show run status
-  report <run-id> <task-id> --from <path>    Import a completion report JSON for a task
-  verify <run-id> <task-id>                  Run deterministic verification
-  retry <run-id> <task-id>                   Requeue a blocked task for another attempt
-  tasks <run-id> [--status X] [--json]       Query tasks with filters
-  ready <run-id> [--json]                    Show dispatchable tasks
-  blocked <run-id> [--json]                  Show blocked tasks
-  next <run-id> [--json]                     Show next task to work on
-  progress <run-id> [--json]                 Show run progress`)
-}
+// usage is defined in help.go — renders grouped command help with lipgloss.
 
 func workDir() (string, error) {
 	return os.Getwd()
