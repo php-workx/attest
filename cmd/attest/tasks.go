@@ -168,7 +168,7 @@ func cmdTasks(args []string) error {
 	}
 
 	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -198,7 +198,7 @@ func cmdReady(args []string) error {
 	}
 
 	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -240,7 +240,7 @@ func cmdBlocked(args []string) error {
 	}
 
 	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -286,7 +286,7 @@ func cmdNext(args []string) error {
 	}
 
 	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -355,7 +355,7 @@ func cmdProgress(args []string) error {
 	}
 
 	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}

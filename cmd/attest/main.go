@@ -600,7 +600,7 @@ func cmdReport(args []string) error {
 	}
 
 	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf("read tasks: %w", err)
 	}
@@ -660,7 +660,7 @@ func cmdVerify(ctx context.Context, args []string) error {
 	runDir := state.NewRunDir(wd, runID)
 	eng := engine.New(runDir, wd)
 
-	tasks, err := runDir.ReadTasks()
+	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf("read tasks: %w", err)
 	}
