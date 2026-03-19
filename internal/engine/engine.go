@@ -27,8 +27,22 @@ const (
 // Engine is the Phase 1 run engine (spec section 18.3).
 // Serial execution, foreground, no council, no detached mode.
 type Engine struct {
-	RunDir  *state.RunDir
-	WorkDir string // repository root
+	RunDir    *state.RunDir
+	WorkDir   string          // repository root
+	TaskStore state.TaskStore // nil = fall back to RunDir
+}
+
+// taskStore returns the configured TaskStore or falls back to RunDir.
+func (e *Engine) taskStore() state.TaskStore {
+	if e.TaskStore != nil {
+		return e.TaskStore
+	}
+	return e.RunDir.AsTaskStore()
+}
+
+// runID returns the run ID from the RunDir path.
+func (e *Engine) runID() string {
+	return filepathBase(e.RunDir.Root)
 }
 
 // New creates a new engine for the given run directory.
@@ -181,7 +195,7 @@ func (e *Engine) Compile(ctx context.Context) (*compiler.CompileResult, error) {
 	}
 
 	// Write compiled tasks and coverage.
-	if err := e.RunDir.WriteTasks(result.Tasks); err != nil {
+	if err := e.taskStore().WriteTasks(e.runID(), result.Tasks); err != nil {
 		return nil, fmt.Errorf(errWriteTasks, err)
 	}
 	if err := e.RunDir.WriteCoverage(result.Coverage); err != nil {
@@ -262,7 +276,7 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 
 // RetryTask clears a blocked task for another manual attempt.
 func (e *Engine) RetryTask(taskID string) error {
-	tasks, err := e.RunDir.ReadTasks()
+	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -286,7 +300,7 @@ func (e *Engine) RetryTask(taskID string) error {
 		return fmt.Errorf("task %s not found", taskID)
 	}
 
-	if err := e.RunDir.WriteTasks(tasks); err != nil {
+	if err := e.taskStore().WriteTasks(e.runID(), tasks); err != nil {
 		return fmt.Errorf(errWriteTasks, err)
 	}
 	if err := e.syncCoverageFromTasks(); err != nil {
@@ -326,7 +340,7 @@ func (e *Engine) ReconcileRunStatus() (*state.RunStatus, error) {
 		return nil, fmt.Errorf(errReadArtifact, err)
 	}
 
-	tasks, err := e.RunDir.ReadTasks()
+	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf(errReadTasks, err)
 	}
@@ -346,7 +360,7 @@ func (e *Engine) ReconcileRunStatus() (*state.RunStatus, error) {
 
 // UpdateTaskStatus updates a task's status in tasks.json (single-writer rule, spec section 4.1).
 func (e *Engine) UpdateTaskStatus(taskID string, newStatus state.TaskStatus, reason string) error {
-	tasks, err := e.RunDir.ReadTasks()
+	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -364,7 +378,7 @@ func (e *Engine) UpdateTaskStatus(taskID string, newStatus state.TaskStatus, rea
 		return fmt.Errorf("task %s not found", taskID)
 	}
 
-	if err := e.RunDir.WriteTasks(tasks); err != nil {
+	if err := e.taskStore().WriteTasks(e.runID(), tasks); err != nil {
 		return err
 	}
 	if err := e.syncCoverageFromTasks(); err != nil {
@@ -375,7 +389,7 @@ func (e *Engine) UpdateTaskStatus(taskID string, newStatus state.TaskStatus, rea
 
 // GetPendingTasks returns tasks in pending state with satisfied dependencies.
 func (e *Engine) GetPendingTasks() ([]state.Task, error) {
-	tasks, err := e.RunDir.ReadTasks()
+	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +439,7 @@ func (e *Engine) refreshRunStatus(nextState state.RunState, currentGate string, 
 	status.TaskDetails = nil
 
 	var tasks []state.Task
-	if tasks, err = e.RunDir.ReadTasks(); err == nil {
+	if tasks, err = e.taskStore().ReadTasks(e.runID()); err == nil {
 		for i := range tasks {
 			status.TaskCountsByState[string(tasks[i].Status)]++
 			if tasks[i].StatusReason == "" {
@@ -474,7 +488,7 @@ func filepathBase(path string) string {
 }
 
 func (e *Engine) persistVerifiedTask(task *state.Task, status state.TaskStatus, reason string) error {
-	tasks, err := e.RunDir.ReadTasks()
+	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf(errReadTasks, err)
@@ -501,7 +515,7 @@ func (e *Engine) persistVerifiedTask(task *state.Task, status state.TaskStatus, 
 		tasks = append(tasks, verifiedTask)
 	}
 
-	if err := e.RunDir.WriteTasks(tasks); err != nil {
+	if err := e.taskStore().WriteTasks(e.runID(), tasks); err != nil {
 		return fmt.Errorf(errWriteTasks, err)
 	}
 	return nil
@@ -614,7 +628,7 @@ func (e *Engine) syncCoverageFromTasks() error {
 		return fmt.Errorf("read coverage: %w", err)
 	}
 
-	tasks, err := e.RunDir.ReadTasks()
+	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
