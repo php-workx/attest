@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,9 +47,10 @@ func (s *Store) CreateRun(runID string) error {
 }
 
 // ReadTasks returns all tasks scoped to a run (where parent == runID).
+// On ErrPartialRead, returns successfully-parsed tasks alongside the error.
 func (s *Store) ReadTasks(runID string) ([]state.Task, error) {
 	all, err := s.readAll()
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrPartialRead) {
 		return nil, err
 	}
 	var tasks []state.Task
@@ -57,37 +59,39 @@ func (s *Store) ReadTasks(runID string) ([]state.Task, error) {
 			tasks = append(tasks, all[i])
 		}
 	}
-	return tasks, nil
+	return tasks, err
 }
 
 // WriteTasks creates an epic for the run and writes all tasks as children.
 // For existing tickets, preserves the markdown body (notes, descriptions).
+// Does not mutate the input slice — works on copies.
 func (s *Store) WriteTasks(runID string, tasks []state.Task) error {
 	if err := s.CreateRun(runID); err != nil {
 		return fmt.Errorf("create run epic: %w", err)
 	}
 	for i := range tasks {
-		tasks[i].ParentTaskID = runID
-		path := filepath.Join(s.Dir, tasks[i].TaskID+".md")
+		task := tasks[i] // copy — do not mutate caller's slice
+		task.ParentTaskID = runID
+		path := filepath.Join(s.Dir, task.TaskID+".md")
 
 		// If file exists, preserve body via frontmatter-only update.
 		if existing, readErr := os.ReadFile(path); readErr == nil {
-			updated, fmErr := UpdateFrontmatter(existing, &tasks[i])
+			updated, fmErr := UpdateFrontmatter(existing, &task)
 			if fmErr == nil {
 				if writeErr := atomicWrite(path, updated); writeErr != nil {
-					return fmt.Errorf("update task %s: %w", tasks[i].TaskID, writeErr)
+					return fmt.Errorf("update task %s: %w", task.TaskID, writeErr)
 				}
 				continue
 			}
 		}
 
 		// New file — full marshal.
-		data, err := MarshalTicket(&tasks[i])
+		data, err := MarshalTicket(&task)
 		if err != nil {
-			return fmt.Errorf("marshal task %s: %w", tasks[i].TaskID, err)
+			return fmt.Errorf("marshal task %s: %w", task.TaskID, err)
 		}
-		if err := s.writeFile(tasks[i].TaskID, data); err != nil {
-			return fmt.Errorf("write task %s: %w", tasks[i].TaskID, err)
+		if err := s.writeFile(task.TaskID, data); err != nil {
+			return fmt.Errorf("write task %s: %w", task.TaskID, err)
 		}
 	}
 	return nil
@@ -193,62 +197,99 @@ func (s *Store) AddNote(id, text string) error {
 }
 
 // AddDep adds a directional dependency (id depends on depID).
+// The full read-check-write is inside a single lock to prevent TOCTOU races.
 func (s *Store) AddDep(id, depID string) error {
-	task, err := s.ReadTask(id)
+	resolvedID, err := ResolveID(s.Dir, id)
 	if err != nil {
 		return err
 	}
-	for _, d := range task.DependsOn {
-		if d == depID {
-			return nil // already exists
+	path := filepath.Join(s.Dir, resolvedID+".md")
+
+	return s.withLock(path, func() error {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("%w: %v", ErrTicketNotFound, readErr)
 		}
-	}
-	task.DependsOn = append(task.DependsOn, depID)
-	return s.WriteTask(task)
+		task, parseErr := UnmarshalTicket(data)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, d := range task.DependsOn {
+			if d == depID {
+				return nil // already exists
+			}
+		}
+		task.DependsOn = append(task.DependsOn, depID)
+		task.UpdatedAt = time.Now()
+
+		updated, fmErr := UpdateFrontmatter(data, task)
+		if fmErr != nil {
+			return fmErr
+		}
+		return atomicWrite(path, updated)
+	})
 }
 
 // RemoveDep removes a dependency.
+// The full read-filter-write is inside a single lock to prevent TOCTOU races.
 func (s *Store) RemoveDep(id, depID string) error {
-	task, err := s.ReadTask(id)
+	resolvedID, err := ResolveID(s.Dir, id)
 	if err != nil {
 		return err
 	}
-	filtered := make([]string, 0, len(task.DependsOn))
-	for _, d := range task.DependsOn {
-		if d != depID {
-			filtered = append(filtered, d)
+	path := filepath.Join(s.Dir, resolvedID+".md")
+
+	return s.withLock(path, func() error {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("%w: %v", ErrTicketNotFound, readErr)
 		}
-	}
-	task.DependsOn = filtered
-	return s.WriteTask(task)
+		task, parseErr := UnmarshalTicket(data)
+		if parseErr != nil {
+			return parseErr
+		}
+		filtered := make([]string, 0, len(task.DependsOn))
+		for _, d := range task.DependsOn {
+			if d != depID {
+				filtered = append(filtered, d)
+			}
+		}
+		task.DependsOn = filtered
+		task.UpdatedAt = time.Now()
+
+		updated, fmErr := UpdateFrontmatter(data, task)
+		if fmErr != nil {
+			return fmErr
+		}
+		return atomicWrite(path, updated)
+	})
 }
 
 // ReadyTasks returns tasks scoped to a run that are open with all deps satisfied.
 func (s *Store) ReadyTasks(runID string) ([]state.Task, error) {
 	tasks, err := s.ReadTasks(runID)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrPartialRead) {
 		return nil, err
 	}
-	return ReadyFilter(tasks), nil
+	return ReadyFilter(tasks), err
 }
 
 // BlockedTasks returns tasks scoped to a run that are open with unresolved deps.
 func (s *Store) BlockedTasks(runID string) ([]state.Task, error) {
 	tasks, err := s.ReadTasks(runID)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrPartialRead) {
 		return nil, err
 	}
-	return BlockedFilter(tasks), nil
+	return BlockedFilter(tasks), err
 }
 
 // DetectCycles finds dependency cycles scoped to a run.
 func (s *Store) DetectCycles(runID string) ([][]string, error) {
 	tasks, err := s.ReadTasks(runID)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrPartialRead) {
 		return nil, err
 	}
-	cycles := DetectCycles(tasks)
-	return cycles, nil
+	return DetectCycles(tasks), err
 }
 
 // Link creates a bidirectional link between two tickets.
@@ -272,19 +313,26 @@ func (s *Store) readAll() ([]state.Task, error) {
 	}
 
 	var tasks []state.Task
+	var skipped []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		data, readErr := os.ReadFile(filepath.Join(s.Dir, e.Name()))
+		path := filepath.Join(s.Dir, e.Name())
+		data, readErr := os.ReadFile(path)
 		if readErr != nil {
+			skipped = append(skipped, fmt.Sprintf("%s: %v", e.Name(), readErr))
 			continue
 		}
 		task, parseErr := UnmarshalTicket(data)
 		if parseErr != nil {
-			continue // skip corrupt files
+			skipped = append(skipped, fmt.Sprintf("%s: %v", e.Name(), parseErr))
+			continue
 		}
 		tasks = append(tasks, *task)
+	}
+	if len(skipped) > 0 {
+		return tasks, fmt.Errorf("%w: %s", ErrPartialRead, strings.Join(skipped, "; "))
 	}
 	return tasks, nil
 }

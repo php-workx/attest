@@ -112,6 +112,19 @@ func TestStatusFromTicketFallsBackToTkStatus(t *testing.T) {
 	}
 }
 
+func TestStatusFromTicketRejectsInvalidAttestStatus(t *testing.T) {
+	// Invalid attest_status should fall back to tk status mapping, not blindly cast.
+	got := StatusFromTicket("closed", "typo_status")
+	if got != state.TaskDone {
+		t.Errorf("StatusFromTicket(closed, typo_status) = %q, want done (fallback to tk status)", got)
+	}
+
+	got = StatusFromTicket("open", "")
+	if got != state.TaskPending {
+		t.Errorf("StatusFromTicket(open, '') = %q, want pending", got)
+	}
+}
+
 func TestMarshalContainsFrontmatterDelimiters(t *testing.T) {
 	task := testTask()
 	data, err := MarshalTicket(&task)
@@ -168,23 +181,23 @@ func TestMalformedYAML(t *testing.T) {
 }
 
 func TestPreserveUnknownYAMLFields(t *testing.T) {
-	// Write a ticket with an extra unknown field.
-	raw := "---\nid: test\nstatus: open\npriority: 0\norder: 0\ncustom_field: hello_world\n---\n# Test\n"
-	task, err := UnmarshalTicket([]byte(raw))
+	// MarshalTicket does NOT preserve Extra (it builds fresh from TaskToFrontmatter).
+	// But UpdateFrontmatter DOES preserve Extra by merging with the existing frontmatter.
+	raw := []byte("---\nid: test\nstatus: open\npriority: 0\norder: 0\ncustom_field: hello_world\n---\n# Test\n")
+	task, err := UnmarshalTicket(raw)
 	if err != nil {
 		t.Fatalf("UnmarshalTicket: %v", err)
 	}
 
-	// Round-trip back to bytes.
-	data, err := MarshalTicket(task)
+	// Round-trip through UpdateFrontmatter (the body-preserving path).
+	updated, err := UpdateFrontmatter(raw, task)
 	if err != nil {
-		t.Fatalf("MarshalTicket: %v", err)
+		t.Fatalf("UpdateFrontmatter: %v", err)
 	}
-
-	// The Extra field should cause custom_field to survive if the catch-all works.
-	// Note: MarshalTicket builds from TaskToFrontmatter which doesn't carry Extra.
-	// This test documents the current behavior.
-	_ = data
+	content := string(updated)
+	if !strings.Contains(content, "custom_field: hello_world") {
+		t.Error("Extra field custom_field was lost during UpdateFrontmatter round-trip")
+	}
 }
 
 func TestEmptyOptionalFields(t *testing.T) {
@@ -250,6 +263,45 @@ func TestUpdateFrontmatterPreservesBody(t *testing.T) {
 	if !strings.Contains(content, "## Notes") {
 		t.Error("Notes section was lost")
 	}
+	if !strings.Contains(content, "attest_status: done") {
+		t.Error("attest_status not updated")
+	}
+}
+
+func TestUpdateFrontmatterPreservesTkNativeFields(t *testing.T) {
+	// Ticket with tk-native fields not in state.Task: links, assignee, external-ref.
+	raw := []byte("---\nid: task-1\nstatus: open\npriority: 1\norder: 0\nassignee: alice\nexternal-ref: gh-42\nlinks:\n- task-2\n- task-3\ncreated: \"2026-03-19T10:00:00Z\"\n---\n# Task 1\n\nSome notes here.\n")
+
+	task, err := UnmarshalTicket(raw)
+	if err != nil {
+		t.Fatalf("UnmarshalTicket: %v", err)
+	}
+
+	// Simulate an engine status update.
+	task.Status = state.TaskDone
+
+	updated, err := UpdateFrontmatter(raw, task)
+	if err != nil {
+		t.Fatalf("UpdateFrontmatter: %v", err)
+	}
+
+	content := string(updated)
+
+	// tk-native fields must survive.
+	if !strings.Contains(content, "assignee: alice") {
+		t.Error("assignee was lost")
+	}
+	if !strings.Contains(content, "external-ref: gh-42") {
+		t.Error("external-ref was lost")
+	}
+	if !strings.Contains(content, "task-2") || !strings.Contains(content, "task-3") {
+		t.Error("links were lost")
+	}
+	// Body must survive.
+	if !strings.Contains(content, "Some notes here.") {
+		t.Error("body was lost")
+	}
+	// Status must be updated.
 	if !strings.Contains(content, "attest_status: done") {
 		t.Error("attest_status not updated")
 	}

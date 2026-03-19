@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/runger/attest/internal/state"
 )
+
+const testRunID = "run-1"
 
 func TestCreateAndRead(t *testing.T) {
 	dir := t.TempDir()
@@ -146,7 +149,7 @@ func TestReadTasksScopedToRun(t *testing.T) {
 	// Write tasks for two runs.
 	task1 := testTask()
 	task1.TaskID = "task-a"
-	task1.ParentTaskID = "run-1"
+	task1.ParentTaskID = testRunID
 	task2 := testTask()
 	task2.TaskID = "task-b"
 	task2.ParentTaskID = "run-2"
@@ -159,7 +162,7 @@ func TestReadTasksScopedToRun(t *testing.T) {
 	}
 
 	// ReadTasks for run-1 should only return task-a.
-	tasks, err := store.ReadTasks("run-1")
+	tasks, err := store.ReadTasks(testRunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,5 +247,66 @@ func TestConcurrentWritesDifferentTickets(t *testing.T) {
 	}
 	if len(tasks) != 10 {
 		t.Errorf("got %d tasks, want 10", len(tasks))
+	}
+}
+
+func TestReadAllReturnsPartialReadOnCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Write a valid task.
+	task := testTask()
+	task.TaskID = "valid-task"
+	task.ParentTaskID = testRunID
+	if err := store.WriteTask(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a corrupt .md file.
+	corruptPath := filepath.Join(dir, "corrupt.md")
+	if err := os.WriteFile(corruptPath, []byte("not valid yaml at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// readAll should return the valid task AND an ErrPartialRead error.
+	tasks, err := store.readAll()
+	if err == nil {
+		t.Fatal("expected ErrPartialRead, got nil")
+	}
+	if !errors.Is(err, ErrPartialRead) {
+		t.Fatalf("expected ErrPartialRead, got: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1 (the valid one)", len(tasks))
+	}
+	if tasks[0].TaskID != "valid-task" {
+		t.Errorf("got task ID %q, want valid-task", tasks[0].TaskID)
+	}
+}
+
+func TestReadTasksPropagatesPartialRead(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Write a valid task scoped to a run.
+	task := testTask()
+	task.TaskID = "task-ok"
+	task.ParentTaskID = testRunID
+	if err := store.WriteTask(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a corrupt file.
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// ReadTasks should return the valid task and propagate ErrPartialRead.
+	tasks, err := store.ReadTasks(testRunID)
+	if !errors.Is(err, ErrPartialRead) {
+		t.Fatalf("expected ErrPartialRead, got: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].TaskID != "task-ok" {
+		t.Errorf("got tasks %v, want [task-ok]", tasks)
 	}
 }

@@ -72,11 +72,27 @@ func StatusToTicket(s state.TaskStatus) string {
 	return "open"
 }
 
+// validAttestStatuses maps known attest_status strings to their TaskStatus constants.
+var validAttestStatuses = map[string]state.TaskStatus{
+	string(state.TaskPending):       state.TaskPending,
+	string(state.TaskClaimed):       state.TaskClaimed,
+	string(state.TaskImplementing):  state.TaskImplementing,
+	string(state.TaskVerifying):     state.TaskVerifying,
+	string(state.TaskUnderReview):   state.TaskUnderReview,
+	string(state.TaskRepairPending): state.TaskRepairPending,
+	string(state.TaskBlocked):       state.TaskBlocked,
+	string(state.TaskDone):          state.TaskDone,
+	string(state.TaskFailed):        state.TaskFailed,
+}
+
 // StatusFromTicket maps tk-native status + attest_status back to TaskStatus.
-// Prefers attest_status if present (set by Go); falls back to tk status (set by tk CLI).
+// Prefers attest_status if present and valid; falls back to tk status mapping.
 func StatusFromTicket(tkStatus, attestStatus string) state.TaskStatus {
 	if attestStatus != "" {
-		return state.TaskStatus(attestStatus)
+		if s, ok := validAttestStatuses[attestStatus]; ok {
+			return s
+		}
+		// Unrecognized attest_status — fall through to tk status mapping.
 	}
 	switch tkStatus {
 	case "in_progress":
@@ -256,14 +272,23 @@ func splitFrontmatterBody(data []byte) (*Frontmatter, string, error) {
 	return &fm, body, nil
 }
 
-// UpdateFrontmatter replaces the frontmatter of a ticket file while preserving the body.
+// UpdateFrontmatter replaces the frontmatter of a ticket file while preserving
+// the body and tk-native fields not represented in state.Task (Links, Assignee,
+// ExternalRef, and unknown Extra fields for forward compatibility).
 func UpdateFrontmatter(existingData []byte, task *state.Task) ([]byte, error) {
-	_, body, err := splitFrontmatterBody(existingData)
+	existingFM, body, err := splitFrontmatterBody(existingData)
 	if err != nil {
 		return nil, err
 	}
 
 	fm := TaskToFrontmatter(task)
+
+	// Preserve tk-native fields not carried by state.Task.
+	fm.Links = existingFM.Links
+	fm.Assignee = existingFM.Assignee
+	fm.ExternalRef = existingFM.ExternalRef
+	fm.Extra = existingFM.Extra
+
 	yamlData, err := yaml.Marshal(fm)
 	if err != nil {
 		return nil, fmt.Errorf("marshal frontmatter: %w", err)
