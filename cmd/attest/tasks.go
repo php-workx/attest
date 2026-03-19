@@ -13,6 +13,12 @@ import (
 
 const errReadTasks = "read tasks: %w"
 
+// taskStoreForRun returns the TaskStore for a given run.
+// Default uses RunDir (JSON). Stage 3 overrides with ticket.Store.
+var taskStoreForRun = func(wd, runID string) state.TaskStore {
+	return state.NewRunDir(wd, runID).AsTaskStore()
+}
+
 // taskFilter holds parsed filter flags for task queries (spec section 5.2).
 type taskFilter struct {
 	status        string
@@ -167,8 +173,8 @@ func cmdTasks(args []string) error {
 		return err
 	}
 
-	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
+	store := taskStoreForRun(wd, runID)
+	tasks, err := store.ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -197,8 +203,8 @@ func cmdReady(args []string) error {
 		return err
 	}
 
-	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
+	store := taskStoreForRun(wd, runID)
+	tasks, err := store.ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -239,8 +245,8 @@ func cmdBlocked(args []string) error {
 		return err
 	}
 
-	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
+	store := taskStoreForRun(wd, runID)
+	tasks, err := store.ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -285,8 +291,8 @@ func cmdNext(args []string) error {
 		return err
 	}
 
-	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
+	store := taskStoreForRun(wd, runID)
+	tasks, err := store.ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -354,8 +360,8 @@ func cmdProgress(args []string) error {
 		return err
 	}
 
-	runDir := state.NewRunDir(wd, runID)
-	tasks, err := runDir.AsTaskStore().ReadTasks(runID)
+	store := taskStoreForRun(wd, runID)
+	tasks, err := store.ReadTasks(runID)
 	if err != nil {
 		return fmt.Errorf(errReadTasks, err)
 	}
@@ -368,6 +374,7 @@ func cmdProgress(args []string) error {
 
 	// Requirement coverage.
 	var covCounts map[string]int
+	runDir := state.NewRunDir(wd, runID)
 	coverage, err := runDir.ReadCoverage()
 	if err == nil {
 		covCounts = make(map[string]int)

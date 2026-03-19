@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // RunDir manages the .attest/runs/<run-id>/ directory structure (spec section 3.1).
@@ -258,6 +259,9 @@ func (d *RunDir) ReadExecutionPlanApproval() (*ArtifactApproval, error) {
 
 // --- TaskStore adapter (backward compat) ---
 
+// Compile-time interface guard.
+var _ TaskStore = (*RunDirTaskStore)(nil)
+
 // RunDirTaskStore adapts RunDir to the TaskStore interface.
 // NOT concurrent-safe. Use ticket.Store for concurrent access.
 type RunDirTaskStore struct {
@@ -269,12 +273,12 @@ func (d *RunDir) AsTaskStore() TaskStore {
 	return &RunDirTaskStore{RunDir: d}
 }
 
-// ReadTasks reads tasks (ignores runID — RunDir is already run-scoped).
+// ReadTasks reads tasks (ignores runID — RunDir is already run-scoped). NOT concurrent-safe.
 func (a *RunDirTaskStore) ReadTasks(_ string) ([]Task, error) {
 	return a.RunDir.ReadTasks()
 }
 
-// WriteTasks writes tasks (ignores runID — RunDir is already run-scoped).
+// WriteTasks writes tasks (ignores runID — RunDir is already run-scoped). NOT concurrent-safe.
 func (a *RunDirTaskStore) WriteTasks(_ string, tasks []Task) error {
 	return a.RunDir.WriteTasks(tasks)
 }
@@ -326,6 +330,7 @@ func (a *RunDirTaskStore) UpdateStatus(taskID string, status TaskStatus, reason 
 		if tasks[i].TaskID == taskID {
 			tasks[i].Status = status
 			tasks[i].StatusReason = reason
+			tasks[i].UpdatedAt = time.Now()
 			return a.RunDir.WriteTasks(tasks)
 		}
 	}
