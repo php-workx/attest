@@ -268,13 +268,12 @@ func marshalFrontmatterAndBody(fm *Frontmatter, body string) ([]byte, error) {
     return buf.Bytes(), nil
 }
 
-// readAllFrontmatter reads all .md files and returns parsed Frontmatters + bodies.
+// readAllFrontmatter reads all .md files and returns parsed Frontmatters.
 // Unlike readAll() which returns []state.Task (no claim fields), this returns
-// raw Frontmatter structs that include claim metadata.
-func (s *Store) readAllFrontmatter() ([]Frontmatter, []string, error) {
-    // Same directory scan as readAll(), but returns ([]Frontmatter, []body, error)
-    // instead of []state.Task. Used by ReadClaimsForRun.
-}
+// raw Frontmatter structs that include claim metadata. Bodies are not returned
+// since the sole caller (ReadClaimsForRun) only needs frontmatter.
+func (s *Store) readAllFrontmatter() ([]Frontmatter, error)
+
 ```
 
 #### ClaimInfo

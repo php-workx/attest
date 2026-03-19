@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/runger/attest/internal/state"
 )
+
+// Compile-time interface assertion.
+var _ state.ClaimableStore = (*Store)(nil)
 
 // DefaultLeaseDuration is the default TTL for new claims.
 const DefaultLeaseDuration = 15 * time.Minute
@@ -200,6 +204,10 @@ func (s *Store) ReadClaimsForRun(runID string) ([]ClaimInfo, error) {
 	return claims, nil
 }
 
+// errNotExpired is a sentinel used internally by ReclaimExpired to signal
+// that a claim was renewed between the initial scan and the lock-protected check.
+var errNotExpired = errors.New("claim no longer expired")
+
 // ReclaimExpired scans for expired claims in a run and resets those tasks
 // to pending status. Returns the list of reclaimed task IDs.
 func (s *Store) ReclaimExpired(runID string) ([]string, error) {
@@ -230,7 +238,7 @@ func (s *Store) ReclaimExpired(runID string) ([]string, error) {
 			// Re-check: still expired? (may have been renewed between ReadClaimsForRun and lock)
 			expires := parseTime(fm.ClaimExpires)
 			if fm.ClaimedBy == "" || expires.IsZero() || !expires.Before(now) {
-				return nil // no longer expired
+				return errNotExpired // no longer expired — don't count as reclaimed
 			}
 
 			fm.ClaimedBy = ""
@@ -249,7 +257,7 @@ func (s *Store) ReclaimExpired(runID string) ([]string, error) {
 			return atomicWrite(path, out)
 		})
 		if reclaimErr != nil {
-			continue // best-effort per task
+			continue // errNotExpired, file gone, corrupt, or write error — skip
 		}
 		reclaimed = append(reclaimed, claim.TaskID)
 	}
