@@ -378,7 +378,7 @@ func (e *Engine) GetPendingTasks() ([]state.Task, error) {
 
 	var pending []state.Task
 	for i := range tasks {
-		if tasks[i].Status != state.TaskPending {
+		if tasks[i].Status != state.TaskPending && tasks[i].Status != state.TaskRepairPending {
 			continue
 		}
 		// Check dependencies (spec section 7.4).
@@ -394,6 +394,71 @@ func (e *Engine) GetPendingTasks() ([]state.Task, error) {
 		}
 	}
 	return pending, nil
+}
+
+// ClaimAndDispatch claims a task for an agent, transitioning it to TaskClaimed.
+// If the store does not support claims (e.g. RunDir), falls back to UpdateStatus.
+func (e *Engine) ClaimAndDispatch(taskID, ownerID, backend string, lease time.Duration) error {
+	cs, ok := e.taskStore().(state.ClaimableStore)
+	if !ok {
+		return e.taskStore().UpdateStatus(taskID, state.TaskClaimed, "claimed by "+ownerID)
+	}
+	if err := cs.ClaimTask(taskID, ownerID, backend, lease); err != nil {
+		return fmt.Errorf("claim task %s: %w", taskID, err)
+	}
+	_ = e.RunDir.AppendEvent(state.Event{
+		Timestamp: time.Now(),
+		Type:      "task_claimed",
+		RunID:     e.runID(),
+		TaskID:    taskID,
+		Detail:    fmt.Sprintf("claimed by %s (%s)", ownerID, backend),
+	})
+	return nil
+}
+
+// ReleaseTask releases a claim and sets the task to a new status.
+// Falls back to UpdateStatus if the store does not support claims.
+func (e *Engine) ReleaseTask(taskID, ownerID string, newStatus state.TaskStatus, reason string) error {
+	cs, ok := e.taskStore().(state.ClaimableStore)
+	if !ok {
+		return e.taskStore().UpdateStatus(taskID, newStatus, reason)
+	}
+	if err := cs.ReleaseClaim(taskID, ownerID, newStatus, reason); err != nil {
+		return fmt.Errorf("release task %s: %w", taskID, err)
+	}
+	_ = e.RunDir.AppendEvent(state.Event{
+		Timestamp: time.Now(),
+		Type:      "task_released",
+		RunID:     e.runID(),
+		TaskID:    taskID,
+		Detail:    fmt.Sprintf("released by %s → %s", ownerID, newStatus),
+	})
+	return nil
+}
+
+// SweepExpiredClaims reclaims tasks with expired leases, resetting them to pending.
+func (e *Engine) SweepExpiredClaims() ([]string, error) {
+	type expiredSweeper interface {
+		ReclaimExpired(runID string) ([]string, error)
+	}
+	sweeper, ok := e.taskStore().(expiredSweeper)
+	if !ok {
+		return nil, nil
+	}
+	reclaimed, err := sweeper.ReclaimExpired(e.runID())
+	if err != nil {
+		return nil, fmt.Errorf("sweep expired claims: %w", err)
+	}
+	for _, taskID := range reclaimed {
+		_ = e.RunDir.AppendEvent(state.Event{
+			Timestamp: time.Now(),
+			Type:      "claim_expired",
+			RunID:     e.runID(),
+			TaskID:    taskID,
+			Detail:    "claim expired, task reset to pending",
+		})
+	}
+	return reclaimed, nil
 }
 
 func (e *Engine) refreshRunStatus(nextState state.RunState, currentGate string, openBlockers []string) error {

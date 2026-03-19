@@ -47,6 +47,12 @@ type Frontmatter struct {
 	CreatedFrom      string   `yaml:"created_from,omitempty"`
 	UpdatedAt        string   `yaml:"updated_at,omitempty"`
 
+	// Claim fields — managed by Store claim methods, not by state.Task.
+	ClaimedBy      string `yaml:"claimed_by,omitempty"`
+	ClaimBackend   string `yaml:"claim_backend,omitempty"`
+	ClaimExpires   string `yaml:"claim_expires,omitempty"`
+	ClaimHeartbeat string `yaml:"claim_heartbeat,omitempty"`
+
 	// Catch-all for unknown fields — forward compatibility with future tk versions.
 	Extra map[string]interface{} `yaml:",inline"`
 }
@@ -288,6 +294,12 @@ func UpdateFrontmatter(existingData []byte, task *state.Task) ([]byte, error) {
 	fm.Assignee = existingFM.Assignee
 	fm.ExternalRef = existingFM.ExternalRef
 	fm.Extra = existingFM.Extra
+
+	// Preserve claim fields (managed by Store claim methods, not by state.Task).
+	fm.ClaimedBy = existingFM.ClaimedBy
+	fm.ClaimBackend = existingFM.ClaimBackend
+	fm.ClaimExpires = existingFM.ClaimExpires
+	fm.ClaimHeartbeat = existingFM.ClaimHeartbeat
 
 	yamlData, err := yaml.Marshal(fm)
 	if err != nil {

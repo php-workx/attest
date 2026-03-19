@@ -132,3 +132,33 @@ func TestCycleNormalization(t *testing.T) {
 		t.Errorf("cycle start = %q, want 'a' (lexicographic normalization)", cycles[0][0])
 	}
 }
+
+func TestClaimedTaskNotReady(t *testing.T) {
+	tasks := []state.Task{
+		{TaskID: "claimed-task", Status: state.TaskClaimed},
+	}
+	ready := ReadyFilter(tasks)
+	if len(ready) != 0 {
+		t.Errorf("got %d ready, want 0 — claimed tasks must not be dispatchable", len(ready))
+	}
+}
+
+func TestImplementingTaskNotReady(t *testing.T) {
+	tasks := []state.Task{
+		{TaskID: "impl-task", Status: state.TaskImplementing},
+	}
+	ready := ReadyFilter(tasks)
+	if len(ready) != 0 {
+		t.Errorf("got %d ready, want 0 — implementing tasks must not be dispatchable", len(ready))
+	}
+}
+
+func TestRepairPendingTaskReady(t *testing.T) {
+	tasks := []state.Task{
+		{TaskID: "repair-task", Status: state.TaskRepairPending},
+	}
+	ready := ReadyFilter(tasks)
+	if len(ready) != 1 {
+		t.Errorf("got %d ready, want 1 — repair_pending tasks should be dispatchable", len(ready))
+	}
+}

@@ -1263,3 +1263,98 @@ func TestCompileDualWrite(t *testing.T) {
 		}
 	}
 }
+
+func TestClaimAndDispatchWithTicketStore(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wire ticket store.
+	ticketDir := filepath.Join(dir, ".tickets")
+	ticketStore := ticket.NewStore(ticketDir)
+	eng.TaskStore = ticketStore
+
+	result, err := eng.Compile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tasks) == 0 {
+		t.Fatal("no tasks compiled")
+	}
+
+	taskID := result.Tasks[0].TaskID
+	if err := eng.ClaimAndDispatch(taskID, "test-agent", "claude", 5*time.Minute); err != nil {
+		t.Fatalf("ClaimAndDispatch: %v", err)
+	}
+
+	// Verify task is now claimed.
+	task, err := ticketStore.ReadTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != state.TaskClaimed {
+		t.Errorf("status = %s, want claimed", task.Status)
+	}
+}
+
+func TestClaimAndDispatchFallbackWithoutClaimableStore(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err := eng.Compile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No ticket store set — engine falls back to RunDir via UpdateStatus.
+	taskID := result.Tasks[0].TaskID
+
+	if err := eng.ClaimAndDispatch(taskID, "test-agent", "claude", 5*time.Minute); err != nil {
+		t.Fatalf("ClaimAndDispatch fallback: %v", err)
+	}
+
+	// Verify task is claimed via the engine's RunDir (which Prepare may have changed).
+	tasks, err := eng.RunDir.AsTaskStore().ReadTasks(artifact.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range tasks {
+		if tasks[i].TaskID == taskID {
+			if tasks[i].Status != state.TaskClaimed {
+				t.Errorf("status = %s, want claimed", tasks[i].Status)
+			}
+			return
+		}
+	}
+	t.Error("task not found after ClaimAndDispatch fallback")
+}

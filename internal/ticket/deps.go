@@ -13,20 +13,21 @@ const (
 	tkStatusClosed     = "closed"
 )
 
-// ReadyFilter returns tasks that are open/in_progress with all dependencies satisfied.
-// Missing dependencies (not in the task set) are treated as unresolved (not ready).
+// isDispatchable returns true for task statuses that represent unclaimed,
+// ready-for-work states. Only pending and repair_pending tasks can be dispatched.
+func isDispatchable(s state.TaskStatus) bool {
+	return s == state.TaskPending || s == state.TaskRepairPending
+}
+
+// ReadyFilter returns dispatchable tasks (pending/repair_pending) with all
+// dependencies satisfied. Missing dependencies are treated as unresolved.
 func ReadyFilter(tasks []state.Task) []state.Task {
 	statusMap := buildStatusMap(tasks)
 
 	var ready []state.Task
 	for i := range tasks {
 		t := &tasks[i]
-		tkStatus := StatusToTicket(t.Status)
-		if tkStatus != tkStatusOpen && tkStatus != tkStatusInProgress {
-			continue
-		}
-		// Explicitly blocked tasks are never ready.
-		if t.Status == state.TaskBlocked {
+		if !isDispatchable(t.Status) {
 			continue
 		}
 		if allDepsClosed(t.DependsOn, statusMap) {

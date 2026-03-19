@@ -1,7 +1,9 @@
 // Package state implements file-based run state with atomic writes.
 package state
 
-import "time"
+import (
+	"time"
+)
 
 // TaskStore abstracts task persistence. Implementations include
 // RunDir (JSON, backward compat) and ticket.Store (Ticket format).
@@ -18,6 +20,15 @@ type TaskStore interface {
 
 	// Run lifecycle.
 	CreateRun(runID string) error
+}
+
+// ClaimableStore extends TaskStore with exclusive claim operations for
+// multi-agent dispatch. Implementations must provide crash-safe leases.
+type ClaimableStore interface {
+	TaskStore
+	ClaimTask(taskID, ownerID, backend string, lease time.Duration) error
+	ReleaseClaim(taskID, ownerID string, newStatus TaskStatus, reason string) error
+	RenewClaim(taskID, ownerID string, lease time.Duration) error
 }
 
 // RunArtifact is the approved normalized contract for a run (spec section 3.2).
