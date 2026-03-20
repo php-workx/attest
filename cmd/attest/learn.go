@@ -46,7 +46,9 @@ func cmdLearn(args []string) error {
 func cmdLearnAdd(store *learning.Store, args []string) error {
 	content := args[0]
 	var tags []string
+	var paths []string
 	var category learning.Category
+	var sourceTask, sourceRun string
 
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -60,11 +62,21 @@ func cmdLearnAdd(store *learning.Store, args []string) error {
 				category = learning.Category(args[i+1])
 				i++
 			}
+		case "--path":
+			if i+1 < len(args) {
+				paths = append(paths, args[i+1])
+				i++
+			}
 		case "--source-task":
-			// Accepted but not yet wired (engine enrichment handles this).
-			i++
+			if i+1 < len(args) {
+				sourceTask = args[i+1]
+				i++
+			}
 		case "--source-run":
-			i++
+			if i+1 < len(args) {
+				sourceRun = args[i+1]
+				i++
+			}
 		}
 	}
 
@@ -82,10 +94,13 @@ func cmdLearnAdd(store *learning.Store, args []string) error {
 	}
 
 	l := &learning.Learning{
-		Tags:     tags,
-		Category: category,
-		Content:  content,
-		Summary:  summary,
+		Tags:        tags,
+		Category:    category,
+		Content:     content,
+		Summary:     summary,
+		SourceTask:  sourceTask,
+		SourceRun:   sourceRun,
+		SourcePaths: paths,
 	}
 	if err := store.Add(l); err != nil {
 		return err
