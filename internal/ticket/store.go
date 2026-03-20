@@ -26,6 +26,9 @@ func NewStore(dir string) *Store {
 
 // CreateRun creates an epic ticket for a run. Idempotent — skips if epic exists.
 func (s *Store) CreateRun(runID string) error {
+	if err := ValidateID(runID); err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
 	epicPath := filepath.Join(s.Dir, runID+".md")
 	if _, err := os.Stat(epicPath); err == nil {
 		return nil // epic already exists
@@ -137,6 +140,9 @@ func (s *Store) ReadTask(taskID string) (*state.Task, error) {
 
 // WriteTask updates an existing task's frontmatter while preserving the body.
 func (s *Store) WriteTask(task *state.Task) error {
+	if err := ValidateID(task.TaskID); err != nil {
+		return fmt.Errorf("invalid task ID: %w", err)
+	}
 	path := filepath.Join(s.Dir, task.TaskID+".md")
 
 	return s.withLock(path, func() error {
@@ -370,6 +376,9 @@ func (s *Store) readAll() ([]state.Task, error) {
 
 // writeFile writes a ticket file with atomic write and directory creation.
 func (s *Store) writeFile(id string, data []byte) error {
+	if err := ValidateID(id); err != nil {
+		return fmt.Errorf("invalid ticket ID: %w", err)
+	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return fmt.Errorf("create tickets dir: %w", err)
 	}

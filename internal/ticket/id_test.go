@@ -190,6 +190,36 @@ func TestRandomSuffixCharset(t *testing.T) {
 	}
 }
 
+func TestValidateIDRejectsTraversal(t *testing.T) {
+	bad := []string{
+		"../escape",
+		"..\\windows",
+		"foo/bar",
+		"foo\\bar",
+		"/absolute",
+		"",
+	}
+	for _, id := range bad {
+		if err := ValidateID(id); err == nil {
+			t.Errorf("ValidateID(%q) = nil, want error", id)
+		}
+	}
+}
+
+func TestValidateIDAcceptsGood(t *testing.T) {
+	good := []string{
+		"task-at-fr-001",
+		"att-a1b2",
+		"run-1773550987",
+		"task-slice-1",
+	}
+	for _, id := range good {
+		if err := ValidateID(id); err != nil {
+			t.Errorf("ValidateID(%q) = %v, want nil", id, err)
+		}
+	}
+}
+
 // splitIDParts splits an ID by hyphens, handling multi-segment prefixes.
 func splitIDParts(id string) []string {
 	idx := len(id) - 1

@@ -27,12 +27,33 @@ func GenerateID(dir string) (string, error) {
 	return "", ErrIDCollision
 }
 
+// ValidateID checks that an ID is safe to use in file path construction.
+// Rejects IDs containing path separators, ".." segments, or absolute paths.
+func ValidateID(id string) error {
+	if id == "" {
+		return fmt.Errorf("empty ticket ID")
+	}
+	if filepath.IsAbs(id) {
+		return fmt.Errorf("ticket ID must not be absolute: %q", id)
+	}
+	if strings.ContainsAny(id, "/\\") {
+		return fmt.Errorf("ticket ID must not contain path separators: %q", id)
+	}
+	if strings.Contains(id, "..") {
+		return fmt.Errorf("ticket ID must not contain '..': %q", id)
+	}
+	return nil
+}
+
 // ResolveID resolves a (possibly partial) ticket ID to the full ID.
 // Supports exact match and substring matching with ambiguity detection.
 func ResolveID(dir, partial string) (string, error) {
 	partial = strings.TrimSpace(partial)
 	if partial == "" {
 		return "", fmt.Errorf("%w: empty ID", ErrTicketNotFound)
+	}
+	if err := ValidateID(partial); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrTicketNotFound, err)
 	}
 
 	// Try exact match first.
