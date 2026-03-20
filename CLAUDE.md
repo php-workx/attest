@@ -6,7 +6,7 @@ This project uses a CLI ticket system for task management. Run `tk help` when yo
 
 ## What is attest
 
-A spec-driven autonomous run system for coding agents. Implementation is only complete when it traces back to approved spec requirements, passes deterministic verification, and clears independent multi-model council review. Written in Go with zero external dependencies — stdlib only, single binary.
+A spec-driven autonomous run system for coding agents. Implementation is only complete when it traces back to approved spec requirements, passes deterministic verification, and clears independent multi-model council review. Written in Go with minimal dependencies (4 direct: lipgloss, yaml.v3, gofrs/flock, charmbracelet/x/term), single binary.
 
 ## Commands
 
@@ -28,14 +28,19 @@ go test -race -count=1 -run TestCompile ./internal/compiler/...
 
 ```
 CLI (cmd/attest/)
-  ├─ Engine (internal/engine/)      — Run lifecycle orchestration
-  │   ├─ Compiler (internal/compiler/) — Spec → task graph (deterministic, no LLM)
+  ├─ Engine (internal/engine/)         — Run lifecycle orchestration
+  │   ├─ Compiler (internal/compiler/)   — Spec → task graph (deterministic, no LLM)
   │   ├─ Councilflow (internal/councilflow/) — Multi-model review pipeline
-  │   └─ Verifier (internal/verifier/) — Evidence-based verification
-  └─ State (internal/state/)        — File-based types, RunDir I/O, atomic writes
+  │   └─ Verifier (internal/verifier/)   — Evidence-based verification
+  ├─ State (internal/state/)           — Types, TaskStore interface, RunDir I/O, atomic writes
+  └─ Ticket (internal/ticket/)         — File-based task backend (.tickets/ markdown+YAML)
 ```
 
-**State lives on disk:** All run state is in `.attest/runs/<run-id>/` as JSON/JSONL files. `internal/state` provides `RunDir` for managing this directory and atomic file writes for concurrent safety.
+**Task persistence via ticket.Store:** Tasks are stored as markdown files with YAML frontmatter in `.tickets/`. The `ticket.Store` implements `state.TaskStore` and `state.ClaimableStore` interfaces. This is the sole task backend — wired in `cmd/attest/tasks.go`.
+
+**Run state lives on disk:** Run artifacts (spec, plan, reviews) are in `.attest/runs/<run-id>/` as JSON/JSONL files. `internal/state` provides `RunDir` for managing this directory and atomic file writes for concurrent safety.
+
+**Claim system:** `ticket.Store` supports crash-safe exclusive claims via `gofrs/flock` file locking. Workers claim tasks with leases, heartbeat renewal, and atomic release with status transitions.
 
 **Compiler is deterministic:** Requirements are grouped by proximity, assigned to lanes, and given stable IDs/ETags. No LLM involvement — purely rule-based.
 
@@ -43,10 +48,13 @@ CLI (cmd/attest/)
 
 **Verifier pipeline order:** Quality gate → evidence checks → scope check → requirement linkage. Each step can produce blocking findings.
 
-## Key types (internal/state/types.go)
+## Key types and interfaces (internal/state/types.go)
 
+- `TaskStore` — Interface for task CRUD (ReadTasks, WriteTasks, ReadTask, WriteTask, UpdateStatus, CreateRun)
+- `ClaimableStore` — Extends TaskStore with exclusive claim operations (ClaimTask, ReleaseClaim, RenewClaim)
 - `RunArtifact` — Approved normalized contract (requirements, clarifications, risk profile)
 - `Task` — Work item with status, scope (owned/readonly/shared paths), dependencies, requirements
+- `Claim` — Exclusive worker lease on a task (owner, backend, lease expiry, heartbeat)
 - `RunStatus` — Current state summary (active wave, task counts, blockers)
 - `CompletionReport` / `VerifierResult` / `Finding` — Verification artifacts
 - Requirement IDs follow: `AT-FR-***`, `AT-TS-***`, `AT-NFR-***`, `AT-AS-***`
@@ -59,6 +67,16 @@ CLI (cmd/attest/)
 - `//nolint` requires both specific linter name and explanation
 - gosec exclusions (G301/G302/G304/G306) are intentional — attest is a file-management tool
 - gocritic hugeParam threshold is 200 bytes (Task struct at 440 bytes is expected to be flagged if passed by value)
+
+## Ticket system (internal/ticket/)
+
+The `.tickets/` directory holds all task state as markdown files with YAML frontmatter. Key files:
+
+- **store.go** — `TaskStore` + `ClaimableStore` implementation; maps tickets to `state.Task`
+- **format.go** — Marshals/unmarshals between `state.Task` and markdown+YAML; preserves body on frontmatter-only updates
+- **claim.go** — Crash-safe exclusive claims with `gofrs/flock` file locking
+- **deps.go** — Dependency parsing, cycle detection, topological sort
+- **id.go** — `GenerateID` (collision-resistant {prefix}-{4char}), `ResolveID` (partial ID matching)
 
 ## Workflow
 
