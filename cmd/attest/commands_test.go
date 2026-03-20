@@ -1043,3 +1043,68 @@ func extractRunID(t *testing.T, output string) string {
 	t.Fatalf("output %q did not contain run ID", output)
 	return ""
 }
+
+func TestCmdLearnAddAndQuery(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	// Add a learning.
+	output := captureStdout(t, func() {
+		if err := cmdLearn([]string{
+			"Use withLock for atomic read-check-write",
+			"--tag", "concurrency,flock",
+			"--category", "pattern",
+			"--path", "internal/ticket",
+		}); err != nil {
+			t.Fatalf("cmdLearn add: %v", err)
+		}
+	})
+	assertContains(t, output, "Learning added:")
+	assertContains(t, output, "pattern")
+
+	// Query by tag.
+	output = captureStdout(t, func() {
+		if err := cmdLearn([]string{"query", "--tag", "concurrency"}); err != nil {
+			t.Fatalf("cmdLearn query: %v", err)
+		}
+	})
+	assertContains(t, output, "withLock")
+
+	// List all.
+	output = captureStdout(t, func() {
+		if err := cmdLearn([]string{"list"}); err != nil {
+			t.Fatalf("cmdLearn list: %v", err)
+		}
+	})
+	assertContains(t, output, "All learnings (1)")
+}
+
+func TestCmdLearnHandoff(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	output := captureStdout(t, func() {
+		if err := cmdLearn([]string{
+			"handoff",
+			"--summary", "Implemented learning store, tests passing",
+			"--next", "Wire into engine",
+			"--run", "run-1234",
+		}); err != nil {
+			t.Fatalf("cmdLearn handoff: %v", err)
+		}
+	})
+	assertContains(t, output, "Handoff saved:")
+	assertContains(t, output, "Wire into engine")
+}
+
+func TestCmdLearnGC(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	output := captureStdout(t, func() {
+		if err := cmdLearn([]string{"gc"}); err != nil {
+			t.Fatalf("cmdLearn gc: %v", err)
+		}
+	})
+	assertContains(t, output, "Garbage collected: 0")
+}

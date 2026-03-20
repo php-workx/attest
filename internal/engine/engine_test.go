@@ -1448,3 +1448,114 @@ func TestSweepExpiredClaimsWithTicketStore(t *testing.T) {
 		t.Errorf("status = %s, want pending after sweep", task.Status)
 	}
 }
+
+// mockLearningEnricher implements state.LearningEnricher for testing.
+type mockLearningEnricher struct {
+	refs      []state.LearningRef
+	citations []string
+}
+
+func (m *mockLearningEnricher) QueryByTagsAndPaths(_, _ []string, _ int) ([]state.LearningRef, error) {
+	return m.refs, nil
+}
+
+func (m *mockLearningEnricher) RecordCitation(id string) error {
+	m.citations = append(m.citations, id)
+	return nil
+}
+
+func TestCompileEnrichesTasksWithLearnings(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wire ticket store + mock learning enricher.
+	ticketStore := ticket.NewStore(filepath.Join(dir, ".tickets"))
+	eng.TaskStore = ticketStore
+
+	mock := &mockLearningEnricher{
+		refs: []state.LearningRef{
+			{ID: "lrn-test1", Category: "anti_pattern", Utility: 0.8, Summary: "Avoid X"},
+			{ID: "lrn-test2", Category: "codebase", Utility: 0.7, Summary: "Use Y"},
+		},
+	}
+	eng.LearningEnricher = mock
+
+	result, err := eng.Compile(ctx)
+	if err != nil {
+		t.Fatalf("Compile with learnings: %v", err)
+	}
+
+	// Verify tasks got enriched.
+	for i := range result.Tasks {
+		task := &result.Tasks[i]
+		if len(task.LearningIDs) != 2 {
+			t.Errorf("task %s: LearningIDs len = %d, want 2", task.TaskID, len(task.LearningIDs))
+		}
+		if len(task.Warnings) == 0 {
+			t.Errorf("task %s: expected Warnings from anti_pattern learning", task.TaskID)
+		}
+		if len(task.Constraints) == 0 {
+			t.Errorf("task %s: expected Constraints from codebase learning", task.TaskID)
+		}
+		if len(task.LearningContext) != 2 {
+			t.Errorf("task %s: LearningContext len = %d, want 2", task.TaskID, len(task.LearningContext))
+		}
+	}
+
+	// Verify citations were recorded.
+	if len(mock.citations) == 0 {
+		t.Error("expected citations to be recorded")
+	}
+}
+
+func TestCompileWithoutLearningEnricher(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ticketStore := ticket.NewStore(filepath.Join(dir, ".tickets"))
+	eng.TaskStore = ticketStore
+	// No LearningEnricher set — should compile without enrichment.
+
+	result, err := eng.Compile(ctx)
+	if err != nil {
+		t.Fatalf("Compile without enricher: %v", err)
+	}
+
+	for i := range result.Tasks {
+		if len(result.Tasks[i].LearningIDs) != 0 {
+			t.Errorf("task %s: expected no LearningIDs without enricher", result.Tasks[i].TaskID)
+		}
+	}
+}
