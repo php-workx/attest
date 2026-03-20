@@ -47,10 +47,10 @@ func (s *Store) CreateRun(runID string) error {
 }
 
 // ReadTasks returns all tasks scoped to a run (where parent == runID).
-// On ErrPartialRead, returns successfully-parsed tasks alongside the error.
+// On state.ErrPartialRead, returns successfully-parsed tasks alongside the error.
 func (s *Store) ReadTasks(runID string) ([]state.Task, error) {
 	all, err := s.readAll()
-	if err != nil && !errors.Is(err, ErrPartialRead) {
+	if err != nil && !errors.Is(err, state.ErrPartialRead) {
 		return nil, err
 	}
 	var tasks []state.Task
@@ -273,7 +273,7 @@ func (s *Store) RemoveDep(id, depID string) error {
 // ReadyTasks returns tasks scoped to a run that are open with all deps satisfied.
 func (s *Store) ReadyTasks(runID string) ([]state.Task, error) {
 	tasks, err := s.ReadTasks(runID)
-	if err != nil && !errors.Is(err, ErrPartialRead) {
+	if err != nil && !errors.Is(err, state.ErrPartialRead) {
 		return nil, err
 	}
 	return ReadyFilter(tasks), err
@@ -282,7 +282,7 @@ func (s *Store) ReadyTasks(runID string) ([]state.Task, error) {
 // BlockedTasks returns tasks scoped to a run that are open with unresolved deps.
 func (s *Store) BlockedTasks(runID string) ([]state.Task, error) {
 	tasks, err := s.ReadTasks(runID)
-	if err != nil && !errors.Is(err, ErrPartialRead) {
+	if err != nil && !errors.Is(err, state.ErrPartialRead) {
 		return nil, err
 	}
 	return BlockedFilter(tasks), err
@@ -291,7 +291,7 @@ func (s *Store) BlockedTasks(runID string) ([]state.Task, error) {
 // DetectCycles finds dependency cycles scoped to a run.
 func (s *Store) DetectCycles(runID string) ([][]string, error) {
 	tasks, err := s.ReadTasks(runID)
-	if err != nil && !errors.Is(err, ErrPartialRead) {
+	if err != nil && !errors.Is(err, state.ErrPartialRead) {
 		return nil, err
 	}
 	return DetectCycles(tasks), err
@@ -337,7 +337,7 @@ func (s *Store) readAll() ([]state.Task, error) {
 		tasks = append(tasks, *task)
 	}
 	if len(skipped) > 0 {
-		return tasks, fmt.Errorf("%w: %s", ErrPartialRead, strings.Join(skipped, "; "))
+		return tasks, fmt.Errorf("%w: %s", state.ErrPartialRead, strings.Join(skipped, "; "))
 	}
 	return tasks, nil
 }

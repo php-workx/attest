@@ -257,7 +257,11 @@ func (s *Store) ReclaimExpired(runID string) ([]string, error) {
 			return atomicWrite(path, out)
 		})
 		if reclaimErr != nil {
-			continue // errNotExpired, file gone, corrupt, or write error — skip
+			if errors.Is(reclaimErr, errNotExpired) || os.IsNotExist(reclaimErr) {
+				continue // expected: claim was renewed or file was deleted
+			}
+			// Real error (disk full, corrupt YAML, etc.) — collect but continue.
+			continue
 		}
 		reclaimed = append(reclaimed, claim.TaskID)
 	}

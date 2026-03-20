@@ -327,7 +327,7 @@ func (e *Engine) ReconcileRunStatus() (*state.RunStatus, error) {
 	}
 
 	tasks, err := e.taskStore().ReadTasks(e.runID())
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, state.ErrPartialRead) {
 		return nil, fmt.Errorf(errReadTasks, err)
 	}
 
@@ -358,7 +358,7 @@ func (e *Engine) UpdateTaskStatus(taskID string, newStatus state.TaskStatus, rea
 // GetPendingTasks returns tasks in pending state with satisfied dependencies.
 func (e *Engine) GetPendingTasks() ([]state.Task, error) {
 	tasks, err := e.taskStore().ReadTasks(e.runID())
-	if err != nil {
+	if err != nil && !errors.Is(err, state.ErrPartialRead) {
 		return nil, err
 	}
 
@@ -472,7 +472,7 @@ func (e *Engine) refreshRunStatus(nextState state.RunState, currentGate string, 
 	status.TaskDetails = nil
 
 	var tasks []state.Task
-	if tasks, err = e.taskStore().ReadTasks(e.runID()); err == nil {
+	if tasks, err = e.taskStore().ReadTasks(e.runID()); err == nil || errors.Is(err, state.ErrPartialRead) {
 		for i := range tasks {
 			status.TaskCountsByState[string(tasks[i].Status)]++
 			if tasks[i].StatusReason == "" {
@@ -647,10 +647,14 @@ func (e *Engine) syncCoverageFromTasks() error {
 
 	tasks, err := e.taskStore().ReadTasks(e.runID())
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, state.ErrPartialRead) {
+			// Partial read: use whatever tasks we got. Not-exist: nothing to sync.
+			if !errors.Is(err, state.ErrPartialRead) {
+				return nil
+			}
+		} else {
+			return fmt.Errorf(errReadTasks, err)
 		}
-		return fmt.Errorf(errReadTasks, err)
 	}
 
 	taskStates := make(map[string]state.TaskStatus, len(tasks))

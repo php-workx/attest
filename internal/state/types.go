@@ -2,8 +2,14 @@
 package state
 
 import (
+	"errors"
 	"time"
 )
+
+// ErrPartialRead indicates some task files could not be read but partial
+// results are available. Callers should use the returned tasks and handle
+// the error as a warning, not a fatal failure.
+var ErrPartialRead = errors.New("partial read: some task files were skipped")
 
 // TaskStore abstracts task persistence. Implementations include
 // RunDir (JSON, backward compat) and ticket.Store (Ticket format).

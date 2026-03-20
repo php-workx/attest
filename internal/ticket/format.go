@@ -110,6 +110,17 @@ func StatusFromTicket(tkStatus, attestStatus string) state.TaskStatus {
 	}
 }
 
+// isActiveStatus returns true for statuses where a claim should be preserved.
+// Pending, done, failed, and blocked are terminal/reset states where claims should clear.
+func isActiveStatus(s state.TaskStatus) bool {
+	switch s {
+	case state.TaskClaimed, state.TaskImplementing, state.TaskVerifying, state.TaskUnderReview:
+		return true
+	default:
+		return false
+	}
+}
+
 func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -295,11 +306,15 @@ func UpdateFrontmatter(existingData []byte, task *state.Task) ([]byte, error) {
 	fm.ExternalRef = existingFM.ExternalRef
 	fm.Extra = existingFM.Extra
 
-	// Preserve claim fields (managed by Store claim methods, not by state.Task).
-	fm.ClaimedBy = existingFM.ClaimedBy
-	fm.ClaimBackend = existingFM.ClaimBackend
-	fm.ClaimExpires = existingFM.ClaimExpires
-	fm.ClaimHeartbeat = existingFM.ClaimHeartbeat
+	// Preserve claim fields when the task remains in an active state.
+	// Clear them when resetting to pending/done/failed (e.g., WriteTasks
+	// re-compiles tasks as pending — stale claim fields must not carry over).
+	if existingFM.ClaimedBy != "" && isActiveStatus(task.Status) {
+		fm.ClaimedBy = existingFM.ClaimedBy
+		fm.ClaimBackend = existingFM.ClaimBackend
+		fm.ClaimExpires = existingFM.ClaimExpires
+		fm.ClaimHeartbeat = existingFM.ClaimHeartbeat
+	}
 
 	yamlData, err := yaml.Marshal(fm)
 	if err != nil {

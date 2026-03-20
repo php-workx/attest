@@ -1349,3 +1349,102 @@ func TestClaimAndDispatchFallbackWithoutClaimableStore(t *testing.T) {
 	}
 	t.Error("task not found after ClaimAndDispatch fallback")
 }
+
+func TestReleaseTaskWithTicketStore(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ticketStore := ticket.NewStore(filepath.Join(dir, ".tickets"))
+	eng.TaskStore = ticketStore
+
+	result, err := eng.Compile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	taskID := result.Tasks[0].TaskID
+
+	// Claim then release.
+	if err := eng.ClaimAndDispatch(taskID, "agent-a", "claude", 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.ReleaseTask(taskID, "agent-a", state.TaskDone, "completed"); err != nil {
+		t.Fatalf("ReleaseTask: %v", err)
+	}
+
+	task, err := ticketStore.ReadTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != state.TaskDone {
+		t.Errorf("status = %s, want done", task.Status)
+	}
+}
+
+func TestSweepExpiredClaimsWithTicketStore(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeTestSpec(t, dir)
+	ctx := context.Background()
+
+	runDir := state.NewRunDir(dir, "placeholder")
+	eng := engine.New(runDir, dir)
+
+	if _, err := eng.Prepare(ctx, []string{specPath}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := eng.RunDir.ReadArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeApprovedExecutionPlanForArtifact(t, eng.RunDir, artifact)
+	if err := eng.Approve(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ticketStore := ticket.NewStore(filepath.Join(dir, ".tickets"))
+	eng.TaskStore = ticketStore
+
+	result, err := eng.Compile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	taskID := result.Tasks[0].TaskID
+
+	// Claim with already-expired lease.
+	if err := ticketStore.ClaimTask(taskID, "agent-a", "claude", -1*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	reclaimed, err := eng.SweepExpiredClaims()
+	if err != nil {
+		t.Fatalf("SweepExpiredClaims: %v", err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0] != taskID {
+		t.Errorf("reclaimed = %v, want [%s]", reclaimed, taskID)
+	}
+
+	task, err := ticketStore.ReadTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != state.TaskPending {
+		t.Errorf("status = %s, want pending after sweep", task.Status)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,6 +14,11 @@ import (
 )
 
 const testRunID = "run-1"
+
+const (
+	testTaskA = "task-a"
+	testTaskB = "task-b"
+)
 
 func TestCreateAndRead(t *testing.T) {
 	dir := t.TempDir()
@@ -149,10 +155,10 @@ func TestReadTasksScopedToRun(t *testing.T) {
 
 	// Write tasks for two runs.
 	task1 := testTask()
-	task1.TaskID = "task-a"
+	task1.TaskID = testTaskA
 	task1.ParentTaskID = testRunID
 	task2 := testTask()
-	task2.TaskID = "task-b"
+	task2.TaskID = testTaskB
 	task2.ParentTaskID = "run-2"
 
 	if err := store.WriteTask(&task1); err != nil {
@@ -167,7 +173,7 @@ func TestReadTasksScopedToRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 || tasks[0].TaskID != "task-a" {
+	if len(tasks) != 1 || tasks[0].TaskID != testTaskA {
 		t.Errorf("ReadTasks(run-1) = %v, want [task-a]", tasks)
 	}
 }
@@ -269,13 +275,13 @@ func TestReadAllReturnsPartialReadOnCorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// readAll should return the valid task AND an ErrPartialRead error.
+	// readAll should return the valid task AND an state.ErrPartialRead error.
 	tasks, err := store.readAll()
 	if err == nil {
-		t.Fatal("expected ErrPartialRead, got nil")
+		t.Fatal("expected state.ErrPartialRead, got nil")
 	}
-	if !errors.Is(err, ErrPartialRead) {
-		t.Fatalf("expected ErrPartialRead, got: %v", err)
+	if !errors.Is(err, state.ErrPartialRead) {
+		t.Fatalf("expected state.ErrPartialRead, got: %v", err)
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1 (the valid one)", len(tasks))
@@ -302,10 +308,10 @@ func TestReadTasksPropagatesPartialRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ReadTasks should return the valid task and propagate ErrPartialRead.
+	// ReadTasks should return the valid task and propagate state.ErrPartialRead.
 	tasks, err := store.ReadTasks(testRunID)
-	if !errors.Is(err, ErrPartialRead) {
-		t.Fatalf("expected ErrPartialRead, got: %v", err)
+	if !errors.Is(err, state.ErrPartialRead) {
+		t.Fatalf("expected state.ErrPartialRead, got: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].TaskID != "task-ok" {
 		t.Errorf("got tasks %v, want [task-ok]", tasks)
@@ -405,5 +411,87 @@ func TestAddDepValidatesDepTargetExists(t *testing.T) {
 	}
 	if !found {
 		t.Error("dep was not recorded on source task")
+	}
+}
+
+func TestRemoveDepSuccess(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	task := testTask()
+	task.TaskID = testTaskA
+	if err := store.WriteTask(&task); err != nil {
+		t.Fatal(err)
+	}
+	dep := testTask()
+	dep.TaskID = testTaskB
+	if err := store.WriteTask(&dep); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add then remove.
+	if err := store.AddDep(testTaskA, testTaskB); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveDep(testTaskA, testTaskB); err != nil {
+		t.Fatalf("RemoveDep: %v", err)
+	}
+
+	updated, err := store.ReadTask(testTaskA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range updated.DependsOn {
+		if d == testTaskB {
+			t.Error("dep should have been removed")
+		}
+	}
+}
+
+func TestAddNoteAppendsToTicket(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	task := testTask()
+	task.TaskID = "task-note"
+	if err := store.WriteTask(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.AddNote("task-note", "First note"); err != nil {
+		t.Fatalf("AddNote: %v", err)
+	}
+	if err := store.AddNote("task-note", "Second note"); err != nil {
+		t.Fatalf("AddNote second: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "task-note.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "## Notes") {
+		t.Error("missing ## Notes section")
+	}
+	if !strings.Contains(content, "First note") {
+		t.Error("first note missing")
+	}
+	if !strings.Contains(content, "Second note") {
+		t.Error("second note missing")
+	}
+	// Should only have one ## Notes header.
+	if strings.Count(content, "## Notes") != 1 {
+		t.Errorf("## Notes appears %d times, want 1", strings.Count(content, "## Notes"))
+	}
+}
+
+func TestAddNoteNotFound(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	err := store.AddNote("nonexistent", "a note")
+	if !errors.Is(err, ErrTicketNotFound) {
+		t.Fatalf("expected ErrTicketNotFound, got: %v", err)
 	}
 }
