@@ -1490,8 +1490,8 @@ func TestCompileEnrichesTasksWithLearnings(t *testing.T) {
 
 	mock := &mockLearningEnricher{
 		refs: []state.LearningRef{
-			{ID: "lrn-test1", Category: "anti_pattern", Utility: 0.8, Summary: "Avoid X"},
-			{ID: "lrn-test2", Category: "codebase", Utility: 0.7, Summary: "Use Y"},
+			{ID: "lrn-test1", Category: "anti_pattern", Utility: 0.8, Summary: "Avoid X", Maturity: "provisional"},
+			{ID: "lrn-test2", Category: "codebase", Utility: 0.7, Summary: "Use Y", Maturity: "provisional"},
 		},
 	}
 	eng.LearningEnricher = mock

@@ -176,6 +176,7 @@ type LearningRef struct {
 	Category string  `json:"category"`
 	Utility  float64 `json:"utility"`
 	Summary  string  `json:"summary"`
+	Maturity string  `json:"maturity,omitempty"`
 }
 
 // TaskScope defines the file-level boundaries for a task (spec section 3.4).

@@ -19,7 +19,7 @@ const (
 
 func cmdLearn(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: attest learn <content|query|handoff|list|gc> [args]")
+		return fmt.Errorf("usage: attest learn <content|query|handoff|list|gc|maintain> [args]")
 	}
 
 	wd, err := workDir()
@@ -37,6 +37,8 @@ func cmdLearn(args []string) error {
 		return cmdLearnList(store)
 	case "gc":
 		return cmdLearnGC(store)
+	case "maintain":
+		return cmdLearnMaintain(store)
 	default:
 		// First arg is the content — add a learning.
 		return cmdLearnAdd(store, args)
@@ -286,6 +288,26 @@ func cmdLearnGC(store *learning.Store) error {
 		return err
 	}
 	fmt.Printf("Garbage collected: %d expired/superseded learnings removed.\n", removed)
+	return nil
+}
+
+func cmdLearnMaintain(store *learning.Store) error {
+	report, err := store.Maintain(90 * 24 * time.Hour)
+	if err != nil {
+		return err
+	}
+	if report.Skipped {
+		fmt.Println("Maintenance skipped (already running).")
+		return nil
+	}
+	fmt.Println("Learning store maintenance:")
+	fmt.Printf("  Promoted:     %d\n", report.Promoted)
+	fmt.Printf("  Demoted:      %d\n", report.Demoted)
+	fmt.Printf("  Stale:        %d learnings penalized\n", report.Stale)
+	fmt.Printf("  GC:           %d removed\n", report.GCRemoved)
+	if report.IndexRebuilt {
+		fmt.Printf("  Index:        rebuilt\n")
+	}
 	return nil
 }
 

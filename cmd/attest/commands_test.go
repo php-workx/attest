@@ -1137,6 +1137,19 @@ func TestCmdContext(t *testing.T) {
 	assertContains(t, output, "Context test learning summary")
 }
 
+func TestCmdLearnMaintain(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	output := captureStdout(t, func() {
+		if err := cmdLearn([]string{"maintain"}); err != nil {
+			t.Fatalf("cmdLearn maintain: %v", err)
+		}
+	})
+	assertContains(t, output, "Learning store maintenance:")
+	assertContains(t, output, "Promoted:")
+}
+
 func TestCmdLearnGC(t *testing.T) {
 	baseDir := t.TempDir()
 	withWorkingDir(t, baseDir)

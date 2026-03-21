@@ -4,11 +4,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -22,15 +25,22 @@ const (
 	decayAmount    = 0.05
 )
 
+// ErrCorruptLearningStore indicates the JSONL store has corrupt lines.
+var ErrCorruptLearningStore = errors.New("corrupt learning store")
+
 // Store manages the learning JSONL file and tag index.
 type Store struct {
-	Dir string           // .attest/learnings/
-	Now func() time.Time // clock injection for tests; defaults to time.Now
+	Dir              string               // .attest/learnings/
+	Now              func() time.Time     // clock injection for tests; defaults to time.Now
+	OnMaintain       func(MaintainReport) // optional callback for logging
+	mu               sync.Mutex
+	lastMaintainedAt time.Time
+	maintaining      atomic.Bool
 }
 
 // NewStore creates a learning store for the given directory.
 func NewStore(dir string) *Store {
-	return &Store{Dir: dir, Now: time.Now}
+	return &Store{Dir: dir, Now: time.Now, lastMaintainedAt: time.Now()}
 }
 
 // Add appends a learning to the store. Acquires exclusive lock.
@@ -66,6 +76,13 @@ func (s *Store) Add(l *Learning) error {
 	const maxContentLen = 10240 // 10KB
 	if len(l.Content) > maxContentLen {
 		l.Content = l.Content[:maxContentLen]
+	}
+
+	if l.Source == "" {
+		l.Source = "manual"
+	}
+	if l.Maturity == "" {
+		l.Maturity = MaturityProvisional
 	}
 
 	// Normalize tags.
@@ -105,9 +122,23 @@ func (s *Store) RecordCitation(id string) error {
 	})
 }
 
+func maturityWeight(m Maturity) float64 {
+	switch m {
+	case MaturityEstablished:
+		return 1.5
+	case MaturityCandidate:
+		return 1.2
+	case MaturityProvisional, "":
+		return 1.0
+	default:
+		return 1.0
+	}
+}
+
 // Query returns learnings matching the filter options.
 // Applies lazy utility decay at query time.
 func (s *Store) Query(opts QueryOpts) ([]Learning, error) {
+	s.MaintainIfStale()
 	learnings, err := s.readAll()
 	if err != nil {
 		return nil, err
@@ -145,9 +176,21 @@ func (s *Store) Query(opts QueryOpts) ([]Learning, error) {
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].CreatedAt.After(results[j].CreatedAt)
 		})
-	default: // "utility"
+	default: // "utility" — weighted by maturity
 		sort.Slice(results, func(i, j int) bool {
-			return results[i].Utility > results[j].Utility
+			scoreI := results[i].Utility * maturityWeight(results[i].Maturity)
+			scoreJ := results[j].Utility * maturityWeight(results[j].Maturity)
+			if scoreI != scoreJ {
+				return scoreI > scoreJ
+			}
+			// Tie-break: higher raw utility first, then newer, then ID
+			if results[i].Utility != results[j].Utility {
+				return results[i].Utility > results[j].Utility
+			}
+			if !results[i].CreatedAt.Equal(results[j].CreatedAt) {
+				return results[i].CreatedAt.After(results[j].CreatedAt)
+			}
+			return results[i].ID < results[j].ID
 		})
 	}
 
@@ -177,6 +220,7 @@ func (s *Store) QueryLearnings(opts state.LearningQueryOpts) ([]state.LearningRe
 			Category: string(results[i].Category),
 			Utility:  results[i].Utility,
 			Summary:  results[i].Summary,
+			Maturity: string(results[i].Maturity),
 		}
 	}
 	return refs, nil
@@ -305,32 +349,181 @@ func (s *Store) AssembleContext(taskID string, tags, paths []string) (*ContextBu
 	}, nil
 }
 
+// MaintainReport summarizes maintenance actions taken.
+type MaintainReport struct {
+	Promoted     int
+	Demoted      int
+	Stale        int
+	GCRemoved    int
+	IndexRebuilt bool
+	Skipped      bool
+}
+
+// readAllWithCount reads all learnings and returns the count of skipped corrupt lines.
+func (s *Store) readAllWithCount() ([]Learning, int, error) {
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return nil, 0, fmt.Errorf("create learnings dir: %w", err)
+	}
+	path := filepath.Join(s.Dir, "index.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("read index: %w", err)
+	}
+
+	var learnings []Learning
+	var skipped int
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var l Learning
+		if err := json.Unmarshal([]byte(line), &l); err != nil {
+			skipped++
+			continue
+		}
+		learnings = append(learnings, l)
+	}
+	return learnings, skipped, nil
+}
+
 // GarbageCollect removes expired and superseded learnings older than maxAge.
+// Delegates to Maintain for the actual work.
 func (s *Store) GarbageCollect(maxAge time.Duration) (int, error) {
-	var removed int
+	report, err := s.Maintain(maxAge)
+	if err != nil {
+		return 0, err
+	}
+	return report.GCRemoved, nil
+}
+
+// Maintain runs knowledge store maintenance: maturity transitions,
+// staleness scan, index rebuild, and garbage collection.
+// Returns ErrCorruptLearningStore if index.jsonl has corrupt lines.
+func (s *Store) Maintain(maxAge time.Duration) (*MaintainReport, error) {
+	if !s.maintaining.CompareAndSwap(false, true) {
+		return &MaintainReport{Skipped: true}, nil
+	}
+	defer s.maintaining.Store(false)
+
+	report := &MaintainReport{}
 	err := s.withLock(func() error {
-		learnings, readErr := s.readAll()
+		learnings, skipped, readErr := s.readAllWithCount()
 		if readErr != nil {
 			return readErr
 		}
-
-		now := s.now()
-		var kept []Learning
-		for i := range learnings {
-			l := &learnings[i]
-			if (l.Expired || l.SupersededBy != "") && now.Sub(l.CreatedAt) > maxAge {
-				removed++
-				continue
-			}
-			kept = append(kept, *l)
+		if skipped > 0 {
+			return fmt.Errorf("%w: %d corrupt lines — run 'attest learn repair' to fix",
+				ErrCorruptLearningStore, skipped)
 		}
 
-		if err := s.writeAll(kept); err != nil {
-			return err
+		applyMaturityTransitions(learnings, report)
+		applyStalenessDecay(learnings, s.now(), report)
+		kept := applyGC(learnings, s.now(), maxAge, report)
+
+		// 4. Write + rebuild index
+		if writeErr := s.writeAll(kept); writeErr != nil {
+			return writeErr
 		}
+		report.IndexRebuilt = true
 		return s.rebuildIndex(kept)
 	})
-	return removed, err
+
+	s.mu.Lock()
+	s.lastMaintainedAt = s.now()
+	s.mu.Unlock()
+	return report, err
+}
+
+// MaintainIfStale triggers background maintenance if more than 24 hours have passed
+// since the last maintenance run. Non-blocking — spawns a goroutine.
+func (s *Store) MaintainIfStale() {
+	s.mu.Lock()
+	if s.lastMaintainedAt.IsZero() {
+		s.lastMaintainedAt = s.now()
+		s.mu.Unlock()
+		return
+	}
+	stale := s.now().Sub(s.lastMaintainedAt) > 24*time.Hour
+	s.mu.Unlock()
+	if stale {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "warning: background maintenance panicked: %v\n", r)
+				}
+			}()
+			report, _ := s.Maintain(90 * 24 * time.Hour)
+			if report != nil && !report.Skipped && s.OnMaintain != nil {
+				s.OnMaintain(*report)
+			}
+		}()
+	}
+}
+
+// checkMaturityTransition returns the new maturity level if a transition is warranted.
+func checkMaturityTransition(l *Learning) Maturity {
+	switch l.Maturity {
+	case MaturityProvisional, "":
+		if l.CitedCount >= 3 && l.Utility >= 0.55 {
+			return MaturityCandidate
+		}
+	case MaturityCandidate:
+		if l.CitedCount >= 5 && l.Utility >= 0.55 {
+			return MaturityEstablished
+		}
+		if l.Utility < 0.3 {
+			return MaturityProvisional
+		}
+	}
+	return ""
+}
+
+func applyMaturityTransitions(learnings []Learning, report *MaintainReport) {
+	for i := range learnings {
+		l := &learnings[i]
+		if l.Expired || l.SupersededBy != "" {
+			continue
+		}
+		newMaturity := checkMaturityTransition(l)
+		if newMaturity == "" || newMaturity == l.Maturity {
+			continue
+		}
+		if newMaturity == MaturityCandidate || newMaturity == MaturityEstablished {
+			report.Promoted++
+		} else {
+			report.Demoted++
+		}
+		l.Maturity = newMaturity
+	}
+}
+
+func applyStalenessDecay(learnings []Learning, now time.Time, report *MaintainReport) {
+	for i := range learnings {
+		l := &learnings[i]
+		if l.Expired || l.SupersededBy != "" {
+			continue
+		}
+		if l.CitedCount == 0 && now.Sub(l.CreatedAt) > 30*24*time.Hour {
+			l.Utility = max(l.Utility-0.1, 0)
+			report.Stale++
+		}
+	}
+}
+
+func applyGC(learnings []Learning, now time.Time, maxAge time.Duration, report *MaintainReport) []Learning {
+	kept := make([]Learning, 0, len(learnings))
+	for i := range learnings {
+		l := &learnings[i]
+		if (l.Expired || l.SupersededBy != "") && now.Sub(l.CreatedAt) > maxAge {
+			report.GCRemoved++
+			continue
+		}
+		kept = append(kept, *l)
+	}
+	return kept
 }
 
 // --- Internal helpers ---

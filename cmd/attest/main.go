@@ -425,6 +425,10 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string, 
 			fmt.Printf("  [round %d] %s: %s (%d findings)\n", round.Round, r.PersonaID, r.Verdict, len(r.Findings))
 		}
 	}
+
+	// Extract learnings from council findings (Phase 2)
+	extractLearningsFromCouncil(eng.WorkDir, result, filepath.Base(eng.RunDir.Root))
+
 	return nil
 }
 
@@ -699,6 +703,8 @@ func cmdVerify(ctx context.Context, args []string) error {
 		for _, f := range result.BlockingFindings {
 			fmt.Printf("  [%s] %s: %s\n", f.Severity, f.Category, f.Summary)
 		}
+		// Extract learnings from verification failures (Phase 2)
+		extractLearningsFromVerifier(wd, result, task)
 	}
 
 	return nil

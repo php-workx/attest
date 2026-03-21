@@ -227,7 +227,7 @@ func TestMarshalTicketWithLearningContext(t *testing.T) {
 		Title:  "Test task",
 		Status: state.TaskPending,
 		LearningContext: []state.LearningRef{
-			{ID: "lrn-abc", Category: "pattern", Utility: 0.75, Summary: "Test learning"},
+			{ID: "lrn-abc", Category: "pattern", Utility: 0.75, Summary: "Test learning", Maturity: "candidate"},
 		},
 	}
 
@@ -248,6 +248,9 @@ func TestMarshalTicketWithLearningContext(t *testing.T) {
 	}
 	if !strings.Contains(content, "0.75") {
 		t.Error("missing utility '0.75'")
+	}
+	if !strings.Contains(content, "candidate") {
+		t.Error("expected maturity 'candidate' in output")
 	}
 }
 

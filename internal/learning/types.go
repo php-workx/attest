@@ -17,23 +17,36 @@ const (
 	CategoryProcess     Category = "process"      // Workflow/dispatch insight
 )
 
+// Maturity tracks how well-established a learning is.
+type Maturity string
+
+// Maturity levels for learning lifecycle.
+const (
+	MaturityProvisional Maturity = "provisional"
+	MaturityCandidate   Maturity = "candidate"
+	MaturityEstablished Maturity = "established"
+)
+
 // Learning is a single entry in the learning store.
 type Learning struct {
-	ID           string     `json:"id"`
-	CreatedAt    time.Time  `json:"created_at"`
-	Tags         []string   `json:"tags"`
-	Category     Category   `json:"category"`
-	Content      string     `json:"content"`
-	Summary      string     `json:"summary"`
-	SourceTask   string     `json:"source_task,omitempty"`
-	SourceRun    string     `json:"source_run,omitempty"`
-	SourcePaths  []string   `json:"source_paths,omitempty"`
-	Confidence   float64    `json:"confidence"`
-	Utility      float64    `json:"utility"`
-	CitedCount   int        `json:"cited_count"`
-	LastCitedAt  *time.Time `json:"last_cited_at,omitempty"`
-	SupersededBy string     `json:"superseded_by,omitempty"`
-	Expired      bool       `json:"expired"`
+	ID            string     `json:"id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	Tags          []string   `json:"tags"`
+	Category      Category   `json:"category"`
+	Content       string     `json:"content"`
+	Summary       string     `json:"summary"`
+	SourceTask    string     `json:"source_task,omitempty"`
+	SourceRun     string     `json:"source_run,omitempty"`
+	SourcePaths   []string   `json:"source_paths,omitempty"`
+	Confidence    float64    `json:"confidence"`
+	Utility       float64    `json:"utility"`
+	CitedCount    int        `json:"cited_count"`
+	LastCitedAt   *time.Time `json:"last_cited_at,omitempty"`
+	SupersededBy  string     `json:"superseded_by,omitempty"`
+	Expired       bool       `json:"expired"`
+	Source        string     `json:"source,omitempty"`         // "manual", "council", "verifier", "rejection"
+	SourceFinding string     `json:"source_finding,omitempty"` // finding ID if extracted
+	Maturity      Maturity   `json:"maturity,omitempty"`       // provisional (default), candidate, established
 }
 
 // SessionHandoff captures session continuity state.

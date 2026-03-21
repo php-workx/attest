@@ -1,6 +1,7 @@
 package learning
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -586,6 +587,210 @@ func TestAssembleContextTokenBudget(t *testing.T) {
 	if bundle.TokensUsed > 2000 {
 		t.Errorf("TokensUsed = %d, want <= 2000", bundle.TokensUsed)
 	}
+}
+
+func TestSourceAndMaturityPreserved(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	l := &Learning{
+		Tags:          []string{"test"},
+		Category:      CategoryPattern,
+		Summary:       "test",
+		Source:        "council",
+		SourceFinding: "sec-001",
+		Maturity:      MaturityCandidate,
+	}
+	if err := store.Add(l); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "council" {
+		t.Errorf("Source = %q, want %q", got.Source, "council")
+	}
+	if got.SourceFinding != "sec-001" {
+		t.Errorf("SourceFinding = %q, want %q", got.SourceFinding, "sec-001")
+	}
+	if got.Maturity != MaturityCandidate {
+		t.Errorf("Maturity = %q, want %q", got.Maturity, MaturityCandidate)
+	}
+}
+
+func TestAddDefaultsSourceAndMaturity(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	l := &Learning{Tags: []string{"test"}, Category: CategoryPattern, Summary: "test"}
+	_ = store.Add(l)
+
+	got, _ := store.Get(l.ID)
+	if got.Source != "manual" {
+		t.Errorf("Source default = %q, want %q", got.Source, "manual")
+	}
+	if got.Maturity != MaturityProvisional {
+		t.Errorf("Maturity default = %q, want %q", got.Maturity, MaturityProvisional)
+	}
+}
+
+func TestMaturityWeightedQuery(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Two learnings with same utility but different maturity
+	_ = store.Add(&Learning{
+		Tags:     []string{"test"},
+		Category: CategoryPattern,
+		Summary:  "provisional",
+		Utility:  0.5,
+		Maturity: MaturityProvisional,
+	})
+	_ = store.Add(&Learning{
+		Tags:     []string{"test"},
+		Category: CategoryPattern,
+		Summary:  "established",
+		Utility:  0.5,
+		Maturity: MaturityEstablished,
+	})
+
+	results, err := store.Query(QueryOpts{Tags: []string{"test"}, SortBy: "utility"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	// Established (0.5 * 1.5 = 0.75) should rank above provisional (0.5 * 1.0 = 0.5)
+	if results[0].Summary != "established" {
+		t.Errorf("first result = %q, want 'established' (higher maturity weight)", results[0].Summary)
+	}
+}
+
+func TestMaintain_MaturityPromotion(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	store := &Store{Dir: dir, Now: fixedClock(now)}
+
+	l := &Learning{
+		Tags:       []string{"test"},
+		Category:   CategoryPattern,
+		Summary:    "promotable",
+		Utility:    0.6,
+		CitedCount: 3,
+		Maturity:   MaturityProvisional,
+	}
+	_ = store.Add(l)
+
+	report, err := store.Maintain(90 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Promoted != 1 {
+		t.Errorf("Promoted = %d, want 1", report.Promoted)
+	}
+
+	got, _ := store.Get(l.ID)
+	if got.Maturity != MaturityCandidate {
+		t.Errorf("Maturity = %q, want candidate", got.Maturity)
+	}
+}
+
+func TestMaintain_MaturityDemotion(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	store := &Store{Dir: dir, Now: fixedClock(now)}
+
+	l := &Learning{
+		Tags:     []string{"test"},
+		Category: CategoryPattern,
+		Summary:  "demotable",
+		Utility:  0.2,
+		Maturity: MaturityCandidate,
+	}
+	_ = store.Add(l)
+
+	report, err := store.Maintain(90 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Demoted != 1 {
+		t.Errorf("Demoted = %d, want 1", report.Demoted)
+	}
+
+	got, _ := store.Get(l.ID)
+	if got.Maturity != MaturityProvisional {
+		t.Errorf("Maturity = %q, want provisional", got.Maturity)
+	}
+}
+
+func TestMaintain_StalePenalty(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	store := &Store{Dir: dir, Now: fixedClock(now)}
+
+	l := &Learning{
+		Tags:      []string{"test"},
+		Category:  CategoryPattern,
+		Summary:   "stale",
+		Utility:   0.5,
+		CreatedAt: now.Add(-60 * 24 * time.Hour), // 60 days old, never cited
+	}
+	_ = store.Add(l)
+
+	report, err := store.Maintain(90 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Stale != 1 {
+		t.Errorf("Stale = %d, want 1", report.Stale)
+	}
+
+	got, _ := store.Get(l.ID)
+	if got.Utility != 0.4 {
+		t.Errorf("Utility = %f, want 0.4 (penalized by 0.1)", got.Utility)
+	}
+}
+
+func TestMaintain_CorruptionBlocks(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Add a valid learning
+	_ = store.Add(&Learning{Tags: []string{"a"}, Category: CategoryPattern, Summary: "valid"})
+
+	// Corrupt the store by appending invalid JSON
+	indexPath := filepath.Join(dir, "index.jsonl")
+	f, _ := os.OpenFile(indexPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	_, _ = f.WriteString("this is not valid json\n")
+	_ = f.Close()
+
+	_, err := store.Maintain(90 * 24 * time.Hour)
+	if err == nil {
+		t.Fatal("expected error for corrupt store")
+	}
+	if !errors.Is(err, ErrCorruptLearningStore) {
+		t.Errorf("error = %v, want ErrCorruptLearningStore", err)
+	}
+}
+
+func TestMaintain_ConcurrentSkips(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	_ = store.Add(&Learning{Tags: []string{"a"}, Category: CategoryPattern, Summary: "test"})
+
+	// Simulate concurrent maintenance
+	store.maintaining.Store(true)
+	report, err := store.Maintain(90 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Skipped {
+		t.Error("expected Skipped=true when maintenance already running")
+	}
+	store.maintaining.Store(false)
 }
 
 func contains(s, substr string) bool {
