@@ -83,6 +83,13 @@ func (s *Store) Add(l *Learning) error {
 	}
 	if l.Maturity == "" {
 		l.Maturity = MaturityProvisional
+	} else {
+		switch l.Maturity {
+		case MaturityProvisional, MaturityCandidate, MaturityEstablished:
+			// valid
+		default:
+			return fmt.Errorf("unknown maturity %q (valid: provisional, candidate, established)", l.Maturity)
+		}
 	}
 
 	// Normalize tags.
@@ -90,10 +97,19 @@ func (s *Store) Add(l *Learning) error {
 		l.Tags[i] = strings.ToLower(strings.TrimSpace(l.Tags[i]))
 	}
 
+	// Normalize SourcePaths: filepath.Clean + forward slashes.
+	for i := range l.SourcePaths {
+		l.SourcePaths[i] = normalizePath(l.SourcePaths[i])
+	}
+
 	return s.withLock(func() error {
-		learnings, err := s.readAll()
+		learnings, skipped, err := s.readAllWithCount()
 		if err != nil {
 			return err
+		}
+		if skipped > 0 {
+			return fmt.Errorf("%w: %d corrupt lines — run 'attest learn repair' to fix",
+				ErrCorruptLearningStore, skipped)
 		}
 		learnings = append(learnings, *l)
 		if err := s.writeAll(learnings); err != nil {
@@ -106,9 +122,13 @@ func (s *Store) Add(l *Learning) error {
 // RecordCitation increments CitedCount and sets LastCitedAt. Acquires lock.
 func (s *Store) RecordCitation(id string) error {
 	return s.withLock(func() error {
-		learnings, err := s.readAll()
+		learnings, skipped, err := s.readAllWithCount()
 		if err != nil {
 			return err
+		}
+		if skipped > 0 {
+			return fmt.Errorf("%w: %d corrupt lines — run 'attest learn repair' to fix",
+				ErrCorruptLearningStore, skipped)
 		}
 		now := s.now()
 		for i := range learnings {
@@ -349,14 +369,23 @@ func (s *Store) AssembleContext(taskID string, tags, paths []string) (*ContextBu
 	}, nil
 }
 
+// Contradiction records two learnings with conflicting categories on overlapping tags.
+type Contradiction struct {
+	LearningA  string
+	LearningB  string
+	SharedTags []string
+}
+
 // MaintainReport summarizes maintenance actions taken.
 type MaintainReport struct {
-	Promoted     int
-	Demoted      int
-	Stale        int
-	GCRemoved    int
-	IndexRebuilt bool
-	Skipped      bool
+	Merged         int
+	Contradictions []Contradiction
+	Promoted       int
+	Demoted        int
+	Stale          int
+	GCRemoved      int
+	IndexRebuilt   bool
+	Skipped        bool
 }
 
 // readAllWithCount reads all learnings and returns the count of skipped corrupt lines.
@@ -419,6 +448,8 @@ func (s *Store) Maintain(maxAge time.Duration) (*MaintainReport, error) {
 				ErrCorruptLearningStore, skipped)
 		}
 
+		applyDedup(learnings, report)
+		report.Contradictions = findContradictions(learnings)
 		applyMaturityTransitions(learnings, report)
 		applyStalenessDecay(learnings, s.now(), report)
 		kept := applyGC(learnings, s.now(), maxAge, report)
@@ -435,6 +466,41 @@ func (s *Store) Maintain(maxAge time.Duration) (*MaintainReport, error) {
 	s.lastMaintainedAt = s.now()
 	s.mu.Unlock()
 	return report, err
+}
+
+// Repair drops corrupt JSONL lines and rewrites the store.
+// Returns (kept, dropped, error). Backs up the corrupt file first.
+func (s *Store) Repair() (kept, dropped int, retErr error) {
+	retErr = s.withLock(func() error {
+		learnings, skipped, readErr := s.readAllWithCount()
+		if readErr != nil {
+			return readErr
+		}
+		if skipped == 0 {
+			kept = len(learnings)
+			return nil // nothing to repair
+		}
+
+		// Back up corrupt file.
+		src := filepath.Join(s.Dir, "index.jsonl")
+		backup := src + ".corrupt." + s.now().Format("20060102T150405")
+		data, err := os.ReadFile(src)
+		if err == nil {
+			_ = os.WriteFile(backup, data, 0o644) //nolint:gosec // backup path derived from store dir, not user input
+		}
+
+		// Rewrite with only valid entries.
+		if writeErr := s.writeAll(learnings); writeErr != nil {
+			return writeErr
+		}
+		if idxErr := s.rebuildIndex(learnings); idxErr != nil {
+			return idxErr
+		}
+		kept = len(learnings)
+		dropped = skipped
+		return nil
+	})
+	return kept, dropped, retErr
 }
 
 // MaintainIfStale triggers background maintenance if more than 24 hours have passed
@@ -464,6 +530,103 @@ func (s *Store) MaintainIfStale() {
 }
 
 // checkMaturityTransition returns the new maturity level if a transition is warranted.
+// applyDedup merges learnings with ≥2 shared tags and similar summaries.
+func applyDedup(learnings []Learning, report *MaintainReport) {
+	for i := range learnings {
+		if learnings[i].Expired || learnings[i].SupersededBy != "" {
+			continue
+		}
+		for j := i + 1; j < len(learnings); j++ {
+			if learnings[j].Expired || learnings[j].SupersededBy != "" {
+				continue
+			}
+			shared := sharedTagCount(learnings[i].Tags, learnings[j].Tags)
+			if shared >= 2 && similarSummary(learnings[i].Summary, learnings[j].Summary) {
+				// Keep the one with higher utility.
+				if learnings[i].Utility >= learnings[j].Utility {
+					learnings[j].SupersededBy = learnings[i].ID
+				} else {
+					learnings[i].SupersededBy = learnings[j].ID
+				}
+				report.Merged++
+			}
+		}
+	}
+}
+
+func sharedTagCount(a, b []string) int {
+	set := make(map[string]bool, len(a))
+	for _, t := range a {
+		set[t] = true
+	}
+	count := 0
+	for _, t := range b {
+		if set[t] {
+			count++
+		}
+	}
+	return count
+}
+
+func similarSummary(a, b string) bool {
+	// Simple: check if shorter is a substring of longer, or they share >80% words.
+	if a == b {
+		return true
+	}
+	shorter, longer := a, b
+	if len(a) > len(b) {
+		shorter, longer = b, a
+	}
+	if shorter == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(longer), strings.ToLower(shorter))
+}
+
+// findContradictions finds anti_pattern + pattern learnings with ≥2 shared tags.
+func findContradictions(learnings []Learning) []Contradiction {
+	var result []Contradiction
+	for i := range learnings {
+		if learnings[i].Expired || learnings[i].SupersededBy != "" {
+			continue
+		}
+		for j := i + 1; j < len(learnings); j++ {
+			if learnings[j].Expired || learnings[j].SupersededBy != "" {
+				continue
+			}
+			// One must be anti_pattern, other must be pattern.
+			isConflict := (learnings[i].Category == CategoryAntiPattern && learnings[j].Category == CategoryPattern) ||
+				(learnings[i].Category == CategoryPattern && learnings[j].Category == CategoryAntiPattern)
+			if !isConflict {
+				continue
+			}
+			shared := sharedTags(learnings[i].Tags, learnings[j].Tags)
+			if len(shared) >= 2 {
+				result = append(result, Contradiction{
+					LearningA:  learnings[i].ID,
+					LearningB:  learnings[j].ID,
+					SharedTags: shared,
+				})
+			}
+		}
+	}
+	return result
+}
+
+func sharedTags(a, b []string) []string {
+	set := make(map[string]bool, len(a))
+	for _, t := range a {
+		set[t] = true
+	}
+	var shared []string
+	for _, t := range b {
+		if set[t] {
+			shared = append(shared, t)
+		}
+	}
+	return shared
+}
+
 func checkMaturityTransition(l *Learning) Maturity {
 	switch l.Maturity {
 	case MaturityProvisional, "":
@@ -564,13 +727,23 @@ func matchesAnyTag(learningTags, queryTags []string) bool {
 
 func matchesAnyPath(sourcePaths, queryPaths []string) bool {
 	for _, qp := range queryPaths {
+		nqp := normalizePath(qp)
 		for _, lp := range sourcePaths {
-			if qp == lp {
+			if nqp == normalizePath(lp) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// normalizePath cleans a path and converts to forward slashes.
+func normalizePath(p string) string {
+	p = filepath.Clean(p)
+	p = filepath.ToSlash(p)
+	// Strip leading ./ if present.
+	p = strings.TrimPrefix(p, "./")
+	return p
 }
 
 func (s *Store) readAll() ([]Learning, error) {

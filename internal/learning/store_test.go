@@ -793,6 +793,55 @@ func TestMaintain_ConcurrentSkips(t *testing.T) {
 	store.maintaining.Store(false)
 }
 
+func TestAddBlockedByCorruption(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Add a valid learning
+	_ = store.Add(&Learning{Tags: []string{"a"}, Category: CategoryPattern, Summary: "valid"})
+
+	// Corrupt the store
+	indexPath := filepath.Join(dir, "index.jsonl")
+	f, _ := os.OpenFile(indexPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	_, _ = f.WriteString("not valid json\n")
+	_ = f.Close()
+
+	// Add should fail
+	err := store.Add(&Learning{Tags: []string{"b"}, Category: CategoryPattern, Summary: "new"})
+	if err == nil {
+		t.Fatal("expected error for corrupt store")
+	}
+	if !errors.Is(err, ErrCorruptLearningStore) {
+		t.Errorf("error = %v, want ErrCorruptLearningStore", err)
+	}
+
+	// Verify original data preserved (corrupt line still there)
+	data, _ := os.ReadFile(indexPath)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 { // 1 valid + 1 corrupt
+		t.Errorf("expected 2 lines preserved, got %d", len(lines))
+	}
+}
+
+func TestRecordCitationBlockedByCorruption(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	l := &Learning{Tags: []string{"a"}, Category: CategoryPattern, Summary: "test"}
+	_ = store.Add(l)
+
+	// Corrupt the store
+	indexPath := filepath.Join(dir, "index.jsonl")
+	f, _ := os.OpenFile(indexPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	_, _ = f.WriteString("corrupt\n")
+	_ = f.Close()
+
+	err := store.RecordCitation(l.ID)
+	if !errors.Is(err, ErrCorruptLearningStore) {
+		t.Errorf("error = %v, want ErrCorruptLearningStore", err)
+	}
+}
+
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }

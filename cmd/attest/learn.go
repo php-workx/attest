@@ -39,6 +39,8 @@ func cmdLearn(args []string) error {
 		return cmdLearnGC(store)
 	case "maintain":
 		return cmdLearnMaintain(store)
+	case "repair":
+		return cmdLearnRepair(store)
 	default:
 		// First arg is the content — add a learning.
 		return cmdLearnAdd(store, args)
@@ -311,6 +313,46 @@ func cmdLearnMaintain(store *learning.Store) error {
 	return nil
 }
 
+func cmdLearnRepair(store *learning.Store) error {
+	kept, dropped, err := store.Repair()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Repaired: kept %d learnings, dropped %d corrupt lines.\n", kept, dropped)
+	return nil
+}
+
+func printContextBundle(bundle *learning.ContextBundle) {
+	fmt.Printf("Context for %s (tokens: %d/%d):\n\n", bundle.TaskID, bundle.TokensUsed, bundle.TokenBudget)
+	if len(bundle.Learnings) > 0 {
+		fmt.Printf("Learnings (%d):\n", len(bundle.Learnings))
+		for i := range bundle.Learnings {
+			l := &bundle.Learnings[i]
+			fmt.Printf("  [%s] (%s, utility=%.2f): %s\n", l.ID, l.Category, l.Utility, l.Summary)
+			if l.Source != "" && l.Source != "manual" {
+				fmt.Printf("         source: %s", l.Source)
+				if l.SourceFinding != "" {
+					fmt.Printf(", finding %s", l.SourceFinding)
+				}
+				if l.SourceRun != "" {
+					fmt.Printf(", %s", l.SourceRun)
+				}
+				fmt.Println()
+			}
+		}
+	} else {
+		fmt.Println("No matching learnings.")
+	}
+
+	if bundle.Handoff != nil {
+		fmt.Printf("\nSession handoff (%s ago):\n  %s\n",
+			time.Since(bundle.Handoff.CreatedAt).Truncate(time.Minute), bundle.Handoff.Summary)
+		for _, s := range bundle.Handoff.NextSteps {
+			fmt.Printf("  Next: %s\n", s)
+		}
+	}
+}
+
 func cmdContext(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: attest context <run-id> <task-id>")
@@ -361,23 +403,6 @@ func cmdContext(args []string) error {
 		return enc.Encode(bundle)
 	}
 
-	fmt.Printf("Context for %s (tokens: %d/%d):\n\n", bundle.TaskID, bundle.TokensUsed, bundle.TokenBudget)
-	if len(bundle.Learnings) > 0 {
-		fmt.Printf("Learnings (%d):\n", len(bundle.Learnings))
-		for i := range bundle.Learnings {
-			l := &bundle.Learnings[i]
-			fmt.Printf("  [%s] (%s, utility=%.2f): %s\n", l.ID, l.Category, l.Utility, l.Summary)
-		}
-	} else {
-		fmt.Println("No matching learnings.")
-	}
-
-	if bundle.Handoff != nil {
-		fmt.Printf("\nSession handoff (%s ago):\n  %s\n",
-			time.Since(bundle.Handoff.CreatedAt).Truncate(time.Minute), bundle.Handoff.Summary)
-		for _, s := range bundle.Handoff.NextSteps {
-			fmt.Printf("  Next: %s\n", s)
-		}
-	}
+	printContextBundle(bundle)
 	return nil
 }

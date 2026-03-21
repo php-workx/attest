@@ -128,7 +128,12 @@ func extractLearningsFromVerifier(wd string, result *state.VerifierResult, task 
 			break
 		}
 		f := &result.BlockingFindings[i]
-		if existing["verifier:"+f.FindingID] {
+		// Use DedupeKey for dedup (per spec §9.2.3), fall back to FindingID.
+		dedup := f.DedupeKey
+		if dedup == "" {
+			dedup = f.FindingID
+		}
+		if existing["verifier:"+dedup] {
 			continue
 		}
 		var sourcePaths []string
@@ -139,7 +144,7 @@ func extractLearningsFromVerifier(wd string, result *state.VerifierResult, task 
 		}
 		l := learning.FromVerifierFailure(
 			f.FindingID, f.Severity, f.Category, f.Summary,
-			taskID, "", sourcePaths,
+			taskID, "", dedup, sourcePaths,
 		)
 		if err := store.Add(l); err == nil {
 			extracted++
