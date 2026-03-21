@@ -554,7 +554,7 @@ func cmdStatus(_ context.Context, args []string) error {
 			}
 			fmt.Printf("  %s  state=%s\n", status.RunID, status.State)
 		}
-		showLatestHandoff(wd)
+		showLatestHandoff(wd, "")
 		return nil
 	}
 
@@ -576,7 +576,7 @@ func cmdStatus(_ context.Context, args []string) error {
 		}
 	}
 
-	showLatestHandoff(wd)
+	showLatestHandoff(wd, runID)
 	return nil
 }
 

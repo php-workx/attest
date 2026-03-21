@@ -323,7 +323,7 @@ func cmdNext(args []string) error {
 		} else {
 			fmt.Println("Next task:")
 			outputTasks(ready[:1], false)
-			showLatestHandoff(wd)
+			showLatestHandoff(wd, runID)
 		}
 		return nil
 	}
@@ -356,7 +356,7 @@ func cmdNext(args []string) error {
 	fmt.Println("No ready or blocked tasks.")
 
 	// Show handoff if recent.
-	showLatestHandoff(wd)
+	showLatestHandoff(wd, runID)
 	return nil
 }
 
@@ -433,11 +433,15 @@ func cmdProgress(args []string) error {
 }
 
 // showLatestHandoff displays the latest session handoff if less than 24h old.
-func showLatestHandoff(wd string) {
+// If runID is non-empty, only shows the handoff if it matches that run.
+func showLatestHandoff(wd, runID string) {
 	store := learning.NewStore(filepath.Join(wd, ".attest", "learnings"))
 	defer store.Wait()
 	h, err := store.LatestHandoff()
 	if err != nil || h == nil {
+		return
+	}
+	if runID != "" && h.RunID != "" && h.RunID != runID {
 		return
 	}
 	age := time.Since(h.CreatedAt)

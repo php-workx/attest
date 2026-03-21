@@ -30,6 +30,19 @@ func existingFindingTags(store *learning.Store, prefixes ...string) map[string]b
 	return ids
 }
 
+// rejectedFindingIDs returns the set of finding IDs that the judge rejected.
+func rejectedFindingIDs(result *councilflow.CouncilResult) map[string]bool {
+	ids := make(map[string]bool)
+	if len(result.Consolidations) == 0 {
+		return ids
+	}
+	lastConsol := &result.Consolidations[len(result.Consolidations)-1]
+	for i := range lastConsol.RejectionLog.Rejections {
+		ids[lastConsol.RejectionLog.Rejections[i].FindingID] = true
+	}
+	return ids
+}
+
 // acceptedFindingIDs returns the set of finding IDs that the judge applied.
 func acceptedFindingIDs(result *councilflow.CouncilResult) map[string]bool {
 	ids := make(map[string]bool)
@@ -55,16 +68,17 @@ func extractLearningsFromCouncil(wd string, result *councilflow.CouncilResult, r
 
 	lastRound := &result.Rounds[len(result.Rounds)-1]
 	accepted := acceptedFindingIDs(result)
+	rejected := rejectedFindingIDs(result)
 	existing := existingFindingTags(store, "finding:", "rejected:")
 
-	// Extract from findings.
+	// Extract from findings (skip rejected — those are handled by extractRejections).
 	for i := range lastRound.Reviews {
 		for j := range lastRound.Reviews[i].Findings {
 			if extracted >= maxExtract {
 				break
 			}
 			f := &lastRound.Reviews[i].Findings[j]
-			if existing["finding:"+f.FindingID] {
+			if existing["finding:"+f.FindingID] || rejected[f.FindingID] {
 				continue
 			}
 			l := learning.FromFinding(learning.ExtractedFinding{

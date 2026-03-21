@@ -39,7 +39,7 @@ mill claim             # Worker claims a task
 mill gc                # Garbage collection
 ```
 
-Single syllable. Four letters. No conflicts with major CLI tools. `mill` is available on crates.io, npm, PyPI (matters if components get published later).
+Single syllable. Four letters. Appears to have no conflicts with major CLI tools (pending unresolved checks — see Open Questions). `mill` is available on crates.io, npm, PyPI (matters if components get published later).
 
 ---
 

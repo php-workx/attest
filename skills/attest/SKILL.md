@@ -32,9 +32,7 @@ attest tech-spec review --from <spec-path> --skip-approval --mode mvp --round 1 
 
 Default: MVP mode, 1 round. Use `--mode standard --round 2` for deeper review, `--mode production --round 3` for release-critical specs.
 
-After review completes, extract up to 5 learnings from findings:
-- Blocking findings → `attest learn "<desc>. Recommendation: <rec>" --tag <cat> --category anti_pattern --source-run <run-id>`
-- Non-blocking insights → `--category codebase`
+Learnings are auto-extracted from council findings and rejections. No manual extraction needed.
 
 If PASS → suggest `/attest plan <run-id>`. If WARN/FAIL → summarize blocking findings.
 
@@ -87,7 +85,7 @@ Run `attest learn maintain` for maintenance. Use `attest learn list` to inspect 
 attest verify <run-id> <task-id>
 ```
 
-If FAIL: extract learnings from blocking findings → `--category anti_pattern --source-task <task-id>`.
+Learnings are auto-extracted from blocking findings on verification failure.
 
 ## Workflow Chains
 
@@ -97,6 +95,6 @@ If FAIL: extract learnings from blocking findings → `--category anti_pattern -
 ## Common Mistakes
 
 - Forgetting `--skip-approval` on review (blocks on interactive persona prompt)
-- Not extracting learnings after review/verify failures — this is how the flywheel builds
+- Learnings are auto-extracted from review/verify failures — no manual extraction needed
 - Running `plan` before `tech-spec review` and approval
 - Using `tk` for run-scoped tasks instead of `attest next` (misses context bundle)

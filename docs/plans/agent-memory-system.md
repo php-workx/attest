@@ -1137,13 +1137,13 @@ applicable_paths:
 Not all learnings are worth injecting. Quality gate (applied during query):
 
 ```
-maturity ∈ {provisional, candidate, established}  // not anti_pattern or expired
+maturity ∈ {provisional, candidate, established}
 AND utility > 0.3
 AND NOT superseded
 AND NOT expired
 ```
 
-Anti-pattern learnings are still queryable (for display, GC) but excluded from injection into task enrichment and worker context. They remain visible in `attest learn list` and `attest learn query`.
+Note: category=`anti_pattern` learnings ARE injected — the engine maps them to `task.Warnings`. The utility > 0.3 threshold is the primary quality gate. All learnings remain visible in `attest learn list` and `attest learn query`.
 
 ### 11.3 The Librarian: Automated Knowledge Maintenance
 
