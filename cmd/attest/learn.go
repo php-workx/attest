@@ -84,6 +84,17 @@ func cmdLearnAdd(store *learning.Store, args []string) error {
 		category = learning.CategoryCodebase
 	}
 
+	// Auto-populate SourcePaths from task's OwnedPaths when --source-task is set.
+	if sourceTask != "" && len(paths) == 0 {
+		wd, wdErr := workDir()
+		if wdErr == nil {
+			taskStore := taskStoreForRun(wd, "")
+			if task, taskErr := taskStore.ReadTask(sourceTask); taskErr == nil {
+				paths = task.Scope.OwnedPaths
+			}
+		}
+	}
+
 	// Use first line as summary if content is multi-line.
 	summary := content
 	if idx := strings.IndexByte(content, '\n'); idx > 0 {
@@ -258,7 +269,10 @@ func cmdLearnList(store *learning.Store) error {
 	}
 
 	// Show latest handoff if exists.
-	h, _ := store.LatestHandoff()
+	h, hErr := store.LatestHandoff()
+	if hErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read latest handoff: %v\n", hErr)
+	}
 	if h != nil {
 		age := time.Since(h.CreatedAt).Truncate(time.Minute)
 		fmt.Printf("\nLatest handoff (%s ago): %s\n", age, h.Summary)
@@ -304,18 +318,12 @@ func cmdContext(args []string) error {
 		return fmt.Errorf("task %s not found in run %s", taskID, runID)
 	}
 
-	// Query learnings matching this task.
+	// Assemble context bundle for this task.
 	learnStore := learning.NewStore(filepath.Join(wd, ".attest", "learnings"))
-	learnings, _ := learnStore.Query(learning.QueryOpts{
-		Tags:       task.Tags,
-		Paths:      task.Scope.OwnedPaths,
-		MinUtility: 0.1,
-		Limit:      8,
-		SortBy:     "utility",
-	})
-
-	// Get latest handoff.
-	handoff, _ := learnStore.LatestHandoff()
+	bundle, err := learnStore.AssembleContext(task.TaskID, task.Tags, task.Scope.OwnedPaths)
+	if err != nil {
+		return fmt.Errorf("assemble context: %w", err)
+	}
 
 	// Output.
 	jsonOutput := false
@@ -326,42 +334,28 @@ func cmdContext(args []string) error {
 	}
 
 	if jsonOutput {
-		out := map[string]interface{}{
-			"task_id":    task.TaskID,
-			"learnings":  learnings,
-			"handoff":    handoff,
-			"tokens_est": estimateTokens(learnings),
-		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return enc.Encode(bundle)
 	}
 
-	fmt.Printf("Context for %s:\n\n", task.TaskID)
-	if len(learnings) > 0 {
-		fmt.Printf("Learnings (%d):\n", len(learnings))
-		for i := range learnings {
-			l := &learnings[i]
+	fmt.Printf("Context for %s (tokens: %d/%d):\n\n", bundle.TaskID, bundle.TokensUsed, bundle.TokenBudget)
+	if len(bundle.Learnings) > 0 {
+		fmt.Printf("Learnings (%d):\n", len(bundle.Learnings))
+		for i := range bundle.Learnings {
+			l := &bundle.Learnings[i]
 			fmt.Printf("  [%s] (%s, utility=%.2f): %s\n", l.ID, l.Category, l.Utility, l.Summary)
 		}
 	} else {
 		fmt.Println("No matching learnings.")
 	}
 
-	if handoff != nil && time.Since(handoff.CreatedAt) < 24*time.Hour {
+	if bundle.Handoff != nil {
 		fmt.Printf("\nSession handoff (%s ago):\n  %s\n",
-			time.Since(handoff.CreatedAt).Truncate(time.Minute), handoff.Summary)
-		for _, s := range handoff.NextSteps {
+			time.Since(bundle.Handoff.CreatedAt).Truncate(time.Minute), bundle.Handoff.Summary)
+		for _, s := range bundle.Handoff.NextSteps {
 			fmt.Printf("  Next: %s\n", s)
 		}
 	}
 	return nil
-}
-
-func estimateTokens(learnings []learning.Learning) int {
-	total := 0
-	for i := range learnings {
-		total += len(learnings[i].Content) / 4
-	}
-	return total
 }

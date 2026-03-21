@@ -12,6 +12,7 @@ import (
 
 	"github.com/runger/attest/internal/compiler"
 	"github.com/runger/attest/internal/engine"
+	"github.com/runger/attest/internal/learning"
 	"github.com/runger/attest/internal/state"
 	"github.com/runger/attest/internal/ticket"
 )
@@ -1095,6 +1096,45 @@ func TestCmdLearnHandoff(t *testing.T) {
 	})
 	assertContains(t, output, "Handoff saved:")
 	assertContains(t, output, "Wire into engine")
+}
+
+func TestCmdContext(t *testing.T) {
+	baseDir := t.TempDir()
+	withWorkingDir(t, baseDir)
+
+	runID := "run-ctx-test"
+
+	// Create a task via the ticket store.
+	ticketStore := ticket.NewStore(filepath.Join(baseDir, ".tickets"))
+	task := state.Task{
+		TaskID:       "task-test-ctx",
+		Title:        "Test context task",
+		Tags:         []string{"testctx"},
+		Status:       state.TaskPending,
+		Scope:        state.TaskScope{OwnedPaths: []string{"internal/test"}},
+		ParentTaskID: runID,
+	}
+	_ = ticketStore.WriteTasks(runID, []state.Task{task})
+
+	// Create a learning store and add a learning with matching tags and paths.
+	learnStore := learning.NewStore(filepath.Join(baseDir, ".attest", "learnings"))
+	_ = learnStore.Add(&learning.Learning{
+		Tags:        []string{"testctx"},
+		Category:    learning.CategoryPattern,
+		Content:     "Context assembly test content",
+		Summary:     "Context test learning summary",
+		Utility:     0.8,
+		SourcePaths: []string{"internal/test"},
+	})
+
+	output := captureStdout(t, func() {
+		if err := cmdContext([]string{runID, "task-test-ctx"}); err != nil {
+			t.Fatalf("cmdContext: %v", err)
+		}
+	})
+
+	assertContains(t, output, "Context for")
+	assertContains(t, output, "Context test learning summary")
 }
 
 func TestCmdLearnGC(t *testing.T) {

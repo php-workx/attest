@@ -63,3 +63,12 @@ type TagIndex struct {
 	Tags    map[string][]string `json:"tags"`
 	Version int                 `json:"version"`
 }
+
+// ContextBundle is the assembled agent context for a task.
+type ContextBundle struct {
+	TaskID      string          `json:"task_id"`
+	Learnings   []Learning      `json:"learnings"`
+	Handoff     *SessionHandoff `json:"handoff,omitempty"`
+	TokensUsed  int             `json:"tokens_used"`
+	TokenBudget int             `json:"token_budget"`
+}

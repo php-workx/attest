@@ -35,7 +35,8 @@ func NewStore(dir string) *Store {
 
 // Add appends a learning to the store. Acquires exclusive lock.
 func (s *Store) Add(l *Learning) error {
-	if l.ID == "" {
+	isNew := l.ID == ""
+	if isNew {
 		id, err := generateID()
 		if err != nil {
 			return err
@@ -45,12 +46,28 @@ func (s *Store) Add(l *Learning) error {
 	if l.CreatedAt.IsZero() {
 		l.CreatedAt = s.now()
 	}
-	if l.Confidence == 0 {
+	if isNew && l.Confidence == 0 {
 		l.Confidence = 0.5
 	}
-	if l.Utility == 0 {
+	if isNew && l.Utility == 0 {
 		l.Utility = 0.5
 	}
+	// Validate category.
+	switch l.Category {
+	case CategoryPattern, CategoryAntiPattern, CategoryTooling, CategoryCodebase, CategoryProcess:
+		// valid
+	case "":
+		l.Category = CategoryCodebase
+	default:
+		return fmt.Errorf("unknown category %q (valid: pattern, anti_pattern, tooling, codebase, process)", l.Category)
+	}
+
+	// Cap content length.
+	const maxContentLen = 10240 // 10KB
+	if len(l.Content) > maxContentLen {
+		l.Content = l.Content[:maxContentLen]
+	}
+
 	// Normalize tags.
 	for i := range l.Tags {
 		l.Tags[i] = strings.ToLower(strings.TrimSpace(l.Tags[i]))
@@ -140,14 +157,14 @@ func (s *Store) Query(opts QueryOpts) ([]Learning, error) {
 	return results, nil
 }
 
-// QueryByTagsAndPaths satisfies state.LearningEnricher. Returns top learnings
+// QueryLearnings satisfies state.LearningEnricher. Returns top learnings
 // matching the given tags or paths, sorted by utility.
-func (s *Store) QueryByTagsAndPaths(tags, paths []string, limit int) ([]state.LearningRef, error) {
+func (s *Store) QueryLearnings(opts state.LearningQueryOpts) ([]state.LearningRef, error) {
 	results, err := s.Query(QueryOpts{
-		Tags:       tags,
-		Paths:      paths,
-		MinUtility: 0.1,
-		Limit:      limit,
+		Tags:       opts.Tags,
+		Paths:      opts.Paths,
+		MinUtility: opts.MinUtility,
+		Limit:      opts.Limit,
 		SortBy:     "utility",
 	})
 	if err != nil {
@@ -242,6 +259,52 @@ func (s *Store) LatestHandoff() (*SessionHandoff, error) {
 	return &h, nil
 }
 
+// AssembleContext builds a ContextBundle for a task by querying learnings
+// matching the task's tags and paths, deduped and capped at token budget.
+func (s *Store) AssembleContext(taskID string, tags, paths []string) (*ContextBundle, error) {
+	const tokenBudget = 2000
+	const maxLearnings = 8
+
+	results, err := s.Query(QueryOpts{
+		Tags:       tags,
+		Paths:      paths,
+		MinUtility: 0.1,
+		SortBy:     "utility",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Cap at token budget and max learnings.
+	var selected []Learning
+	tokensUsed := 0
+	for i := range results {
+		tokens := len(results[i].Content) / 4
+		if tokensUsed+tokens > tokenBudget && len(selected) > 0 {
+			break
+		}
+		selected = append(selected, results[i])
+		tokensUsed += tokens
+		if len(selected) >= maxLearnings {
+			break
+		}
+	}
+
+	handoff, _ := s.LatestHandoff()
+	// Only include handoff if < 24h old.
+	if handoff != nil && s.now().Sub(handoff.CreatedAt) >= 24*time.Hour {
+		handoff = nil
+	}
+
+	return &ContextBundle{
+		TaskID:      taskID,
+		Learnings:   selected,
+		Handoff:     handoff,
+		TokensUsed:  tokensUsed,
+		TokenBudget: tokenBudget,
+	}, nil
+}
+
 // GarbageCollect removes expired and superseded learnings older than maxAge.
 func (s *Store) GarbageCollect(maxAge time.Duration) (int, error) {
 	var removed int
@@ -286,7 +349,7 @@ func (s *Store) matchesFilter(l *Learning, opts *QueryOpts) bool {
 	if opts.Category != "" && l.Category != opts.Category {
 		return false
 	}
-	if len(opts.Tags) > 0 && !matchesAnyTag(l.Tags, opts.Tags) {
+	if len(opts.Tags) > 0 && !matchesAnyTag(l.Tags, opts.Tags) && !matchesAnyKeyword(l.Content, opts.Tags) {
 		return false
 	}
 	if len(opts.Paths) > 0 && !matchesAnyPath(l.SourcePaths, opts.Paths) {
@@ -331,15 +394,20 @@ func (s *Store) readAll() ([]Learning, error) {
 	}
 
 	var learnings []Learning
+	var skipped int
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if line == "" {
 			continue
 		}
 		var l Learning
 		if err := json.Unmarshal([]byte(line), &l); err != nil {
-			continue // skip corrupt lines
+			skipped++
+			continue
 		}
 		learnings = append(learnings, l)
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "warning: skipped %d corrupt lines in %s\n", skipped, path)
 	}
 	return learnings, nil
 }
@@ -356,25 +424,6 @@ func (s *Store) writeAll(learnings []Learning) error {
 	}
 	path := filepath.Join(s.Dir, "index.jsonl")
 	return atomicWrite(path, []byte(buf.String()))
-}
-
-func (s *Store) rebuildIndex(learnings []Learning) error {
-	idx := TagIndex{Tags: make(map[string][]string)}
-	for i := range learnings {
-		if learnings[i].Expired || learnings[i].SupersededBy != "" {
-			continue
-		}
-		for _, tag := range learnings[i].Tags {
-			idx.Tags[tag] = append(idx.Tags[tag], learnings[i].ID)
-		}
-	}
-	idx.Version++
-
-	data, err := json.MarshalIndent(idx, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal index: %w", err)
-	}
-	return atomicWrite(filepath.Join(s.Dir, "tags.json"), data)
 }
 
 func (s *Store) withLock(fn func() error) error {

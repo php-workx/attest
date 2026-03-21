@@ -558,7 +558,11 @@ func (e *Engine) persistVerifiedTask(task *state.Task, status state.TaskStatus, 
 // learning-related fields. Deterministic: Warnings from anti_pattern summaries,
 // Constraints from codebase/tooling summaries. LearningContext for body rendering.
 func (e *Engine) enrichTaskWithLearnings(task *state.Task) {
-	refs, err := e.LearningEnricher.QueryByTagsAndPaths(task.Tags, task.Scope.OwnedPaths, 5)
+	refs, err := e.LearningEnricher.QueryLearnings(state.LearningQueryOpts{
+		Tags:  task.Tags,
+		Paths: task.Scope.OwnedPaths,
+		Limit: 5,
+	})
 	if err != nil || len(refs) == 0 {
 		return
 	}
@@ -583,6 +587,14 @@ func (e *Engine) enrichTaskWithLearnings(task *state.Task) {
 			})
 		}
 	}
+
+	_ = e.RunDir.AppendEvent(state.Event{
+		Timestamp: time.Now(),
+		Type:      "learning_enrichment",
+		RunID:     e.runID(),
+		TaskID:    task.TaskID,
+		Detail:    fmt.Sprintf("attached %d learnings", len(refs)),
+	})
 }
 
 func summarizeFindings(findings []state.Finding) string {

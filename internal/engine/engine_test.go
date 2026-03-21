@@ -1455,7 +1455,7 @@ type mockLearningEnricher struct {
 	citations []string
 }
 
-func (m *mockLearningEnricher) QueryByTagsAndPaths(_, _ []string, _ int) ([]state.LearningRef, error) {
+func (m *mockLearningEnricher) QueryLearnings(_ state.LearningQueryOpts) ([]state.LearningRef, error) {
 	return m.refs, nil
 }
 

@@ -47,10 +47,18 @@ const (
 	LearningCategoryTooling     LearningCategory = "tooling"
 )
 
+// LearningQueryOpts is the subset of query options the engine needs.
+type LearningQueryOpts struct {
+	Tags       []string
+	Paths      []string
+	MinUtility float64
+	Limit      int
+}
+
 // LearningEnricher enriches tasks with learnings from a learning store.
 // The engine type-asserts to this interface. Implemented by learning.Store.
 type LearningEnricher interface {
-	QueryByTagsAndPaths(tags, paths []string, limit int) ([]LearningRef, error)
+	QueryLearnings(opts LearningQueryOpts) ([]LearningRef, error)
 	RecordCitation(id string) error
 }
 
