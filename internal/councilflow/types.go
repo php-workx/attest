@@ -17,11 +17,11 @@ const (
 // Verdict represents the council review outcome.
 type Verdict string
 
-// Verdict constants aligned with agentops council schema.
+// Verdict constants for council review outcomes.
 const (
-	VerdictPass Verdict = "PASS"
-	VerdictWarn Verdict = "WARN"
-	VerdictFail Verdict = "FAIL"
+	VerdictPass Verdict = "pass"
+	VerdictWarn Verdict = "warn"
+	VerdictFail Verdict = "fail"
 )
 
 // Confidence levels for review outputs.
