@@ -454,3 +454,23 @@ func showLatestHandoff(wd, runID string) {
 		fmt.Printf("  Next: %s\n", s)
 	}
 }
+
+// showLearningHealth displays a summary of the learning store.
+func showLearningHealth(wd string) {
+	store := learning.NewStore(filepath.Join(wd, ".attest", "learnings"))
+	h, err := store.Health()
+	if err != nil || h.Total == 0 {
+		return
+	}
+	fmt.Printf("\nLearnings: %d active", h.Active)
+	if h.Expired > 0 {
+		fmt.Printf(", %d expired", h.Expired)
+	}
+	if h.Superseded > 0 {
+		fmt.Printf(", %d superseded", h.Superseded)
+	}
+	if h.WithOutcome > 0 {
+		fmt.Printf(" (avg effectiveness: %.0f%%)", h.AvgEff*100)
+	}
+	fmt.Println()
+}

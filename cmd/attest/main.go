@@ -429,6 +429,9 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string, 
 	// Extract learnings from council findings (Phase 2) — skip during dry-run.
 	if !dryRun {
 		extractLearningsFromCouncil(eng.WorkDir, result, filepath.Base(eng.RunDir.Root))
+		// Trigger learning maintenance after extraction.
+		learnStore := learning.NewStore(filepath.Join(eng.WorkDir, ".attest", "learnings"))
+		_, _ = learnStore.Maintain(90 * 24 * time.Hour)
 	}
 
 	return nil
@@ -555,6 +558,7 @@ func cmdStatus(_ context.Context, args []string) error {
 			fmt.Printf("  %s  state=%s\n", status.RunID, status.State)
 		}
 		showLatestHandoff(wd, "")
+		showLearningHealth(wd)
 		return nil
 	}
 
@@ -700,6 +704,14 @@ func cmdVerify(ctx context.Context, args []string) error {
 
 	if result.Pass {
 		fmt.Println("\nVerification: PASS")
+		// Trigger learning maintenance after successful verification.
+		learnStore := learning.NewStore(filepath.Join(wd, ".attest", "learnings"))
+		if report, mErr := learnStore.Maintain(90 * 24 * time.Hour); mErr == nil && !report.Skipped {
+			if report.Merged > 0 || report.AutoExpired > 0 || report.GCRemoved > 0 {
+				fmt.Printf("Learning maintenance: %d merged, %d expired, %d removed\n",
+					report.Merged, report.AutoExpired, report.GCRemoved)
+			}
+		}
 	} else {
 		fmt.Println("\nVerification: FAIL")
 		for _, f := range result.BlockingFindings {

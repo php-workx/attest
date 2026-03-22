@@ -205,6 +205,50 @@ func (s *Store) QueryLearnings(opts state.LearningQueryOpts) ([]state.LearningRe
 	return refs, nil
 }
 
+// StoreHealth summarizes the learning store state.
+type StoreHealth struct {
+	Total       int
+	Active      int
+	Expired     int
+	Superseded  int
+	ByCategory  map[Category]int
+	WithOutcome int // learnings with AttachCount > 0
+	AvgEff      float64
+}
+
+// Health returns a summary of the learning store state.
+func (s *Store) Health() (*StoreHealth, error) {
+	learnings, err := s.readAll()
+	if err != nil {
+		return nil, err
+	}
+	h := &StoreHealth{
+		Total:      len(learnings),
+		ByCategory: make(map[Category]int),
+	}
+	var effSum float64
+	for i := range learnings {
+		l := &learnings[i]
+		switch {
+		case l.Expired:
+			h.Expired++
+		case l.SupersededBy != "":
+			h.Superseded++
+		default:
+			h.Active++
+			h.ByCategory[l.Category]++
+			if l.AttachCount > 0 {
+				h.WithOutcome++
+				effSum += l.Effectiveness()
+			}
+		}
+	}
+	if h.WithOutcome > 0 {
+		h.AvgEff = effSum / float64(h.WithOutcome)
+	}
+	return h, nil
+}
+
 // Get returns a single learning by ID.
 func (s *Store) Get(id string) (*Learning, error) {
 	learnings, err := s.readAll()
