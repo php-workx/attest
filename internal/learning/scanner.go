@@ -74,17 +74,26 @@ func (cs *ContentScanner) Scan(content string) (string, bool) {
 	}
 
 	for _, term := range cs.customTerms {
-		lower := strings.ToLower(result)
 		termLower := strings.ToLower(term)
-		if strings.Contains(lower, termLower) {
-			// Case-insensitive replacement.
-			idx := strings.Index(lower, termLower)
-			for idx >= 0 {
-				result = result[:idx] + "[REDACTED]" + result[idx+len(term):]
-				lower = strings.ToLower(result)
-				redacted = true
-				idx = strings.Index(lower, termLower)
+		// Build result by scanning from left to right, skipping past replacements.
+		var out strings.Builder
+		lower := strings.ToLower(result)
+		pos := 0
+		found := false
+		for {
+			idx := strings.Index(lower[pos:], termLower)
+			if idx < 0 {
+				break
 			}
+			out.WriteString(result[pos : pos+idx])
+			out.WriteString("[REDACTED]")
+			pos += idx + len(term)
+			found = true
+		}
+		if found {
+			out.WriteString(result[pos:])
+			result = out.String()
+			redacted = true
 		}
 	}
 

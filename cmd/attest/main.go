@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/runger/attest/internal/councilflow"
@@ -107,24 +108,22 @@ func newLearningStore(wd string) *learning.Store {
 }
 
 var (
-	cachedLocalDir   string
-	localDirResolved bool
+	localDirOnce   sync.Once
+	cachedLocalDir string
 )
 
 func resolveLocalLearningDir(wd string) string {
-	if localDirResolved {
-		return cachedLocalDir
-	}
-	localDirResolved = true
-	out, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
-	if err != nil {
-		return ""
-	}
-	gitCommonDir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(gitCommonDir) {
-		gitCommonDir = filepath.Join(wd, gitCommonDir)
-	}
-	cachedLocalDir = filepath.Join(gitCommonDir, "attest", "learnings")
+	localDirOnce.Do(func() {
+		out, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
+		if err != nil {
+			return
+		}
+		gitCommonDir := strings.TrimSpace(string(out))
+		if !filepath.IsAbs(gitCommonDir) {
+			gitCommonDir = filepath.Join(wd, gitCommonDir)
+		}
+		cachedLocalDir = filepath.Join(gitCommonDir, "attest", "learnings")
+	})
 	return cachedLocalDir
 }
 
