@@ -372,6 +372,33 @@ func (s *Store) AssembleContext(taskID string, tags, paths []string, searchText 
 		}
 	}
 
+	// Load prevention checks matching the query paths.
+	var preventionChecks []string
+	queryPaths := paths
+	if len(queryPaths) == 0 {
+		queryPaths = tags // fall back to tags for path matching
+	}
+	for _, subdir := range []string{"review", "planning"} {
+		preventDir := filepath.Join(s.SharedDir, "prevention", subdir)
+		entries, dirErr := os.ReadDir(preventDir)
+		if dirErr != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			data, readErr := os.ReadFile(filepath.Join(preventDir, e.Name()))
+			if readErr != nil {
+				continue
+			}
+			content := string(data)
+			if len(queryPaths) == 0 || preventionMatchesPaths(content, queryPaths) {
+				preventionChecks = append(preventionChecks, content)
+			}
+		}
+	}
+
 	handoff, _ := s.LatestHandoff()
 	// Only include handoff if < 24h old.
 	if handoff != nil && s.now().Sub(handoff.CreatedAt) >= 24*time.Hour {
@@ -379,11 +406,12 @@ func (s *Store) AssembleContext(taskID string, tags, paths []string, searchText 
 	}
 
 	return &ContextBundle{
-		TaskID:      taskID,
-		Learnings:   selected,
-		Handoff:     handoff,
-		TokensUsed:  tokensUsed,
-		TokenBudget: tokenBudget,
+		TaskID:           taskID,
+		Learnings:        selected,
+		PreventionChecks: preventionChecks,
+		Handoff:          handoff,
+		TokensUsed:       tokensUsed,
+		TokenBudget:      tokenBudget,
 	}, nil
 }
 
@@ -568,11 +596,15 @@ const (
 )
 
 // compilePreventionChecks writes high-effectiveness learnings as prevention
-// check markdown files. Returns the number of checks compiled.
+// check markdown files to both review/ and planning/ subdirectories.
+// Returns the number of checks compiled.
 func (s *Store) compilePreventionChecks(learnings []Learning) (int, error) {
-	preventDir := filepath.Join(s.SharedDir, "prevention", "review")
-	if err := os.MkdirAll(preventDir, 0o755); err != nil {
-		return 0, fmt.Errorf("create prevention dir: %w", err)
+	subdirs := []string{"review", "planning"}
+	for _, subdir := range subdirs {
+		dir := filepath.Join(s.SharedDir, "prevention", subdir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return 0, fmt.Errorf("create prevention %s dir: %w", subdir, err)
+		}
 	}
 
 	// Track which learning IDs should have prevention checks.
@@ -585,25 +617,30 @@ func (s *Store) compilePreventionChecks(learnings []Learning) (int, error) {
 		}
 		if l.AttachCount >= preventionMinAttachCount && l.Effectiveness() >= preventionMinEffectiveness {
 			wanted[l.ID] = true
-			path := filepath.Join(preventDir, l.ID+".md")
 			content := formatPreventionCheck(l, s.now())
-			if err := atomicWrite(path, []byte(content)); err != nil {
-				return compiled, fmt.Errorf("write prevention check %s: %w", l.ID, err)
+			for _, subdir := range subdirs {
+				path := filepath.Join(s.SharedDir, "prevention", subdir, l.ID+".md")
+				if err := atomicWrite(path, []byte(content)); err != nil {
+					return compiled, fmt.Errorf("write prevention check %s/%s: %w", subdir, l.ID, err)
+				}
 			}
 			compiled++
 		}
 	}
 
 	// Remove prevention checks for learnings that no longer qualify.
-	entries, _ := os.ReadDir(preventDir)
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".md")
-		if !wanted[id] {
-			_ = os.Remove(filepath.Join(preventDir, name))
+	for _, subdir := range subdirs {
+		dir := filepath.Join(s.SharedDir, "prevention", subdir)
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			name := e.Name()
+			if !strings.HasSuffix(name, ".md") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".md")
+			if !wanted[id] {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
 		}
 	}
 

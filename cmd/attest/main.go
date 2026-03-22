@@ -467,6 +467,12 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string, 
 	// Extract learnings from council findings (Phase 2) — skip during dry-run.
 	if !dryRun {
 		extractLearningsFromCouncil(eng.WorkDir, result, filepath.Base(eng.RunDir.Root))
+		_ = eng.RunDir.AppendEvent(state.Event{
+			Timestamp: time.Now(),
+			Type:      "learning_extraction",
+			RunID:     filepath.Base(eng.RunDir.Root),
+			Detail:    fmt.Sprintf("source=council rounds=%d", len(result.Rounds)),
+		})
 		// Trigger learning maintenance after extraction.
 		learnStore := newLearningStore(eng.WorkDir)
 		_, _ = learnStore.Maintain(90 * 24 * time.Hour)
@@ -757,6 +763,13 @@ func cmdVerify(ctx context.Context, args []string) error {
 		}
 		// Extract learnings from verification failures (Phase 2)
 		extractLearningsFromVerifier(wd, result, task)
+		_ = eng.RunDir.AppendEvent(state.Event{
+			Timestamp: time.Now(),
+			Type:      "learning_extraction",
+			RunID:     filepath.Base(eng.RunDir.Root),
+			TaskID:    task.TaskID,
+			Detail:    fmt.Sprintf("source=verifier findings=%d", len(result.BlockingFindings)),
+		})
 	}
 
 	return nil

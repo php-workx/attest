@@ -428,6 +428,19 @@ func printContextBundle(bundle *learning.ContextBundle) {
 		fmt.Println("No matching learnings.")
 	}
 
+	if len(bundle.PreventionChecks) > 0 {
+		fmt.Printf("\nPrevention checks (%d):\n", len(bundle.PreventionChecks))
+		for _, check := range bundle.PreventionChecks {
+			// Show first line (the header) of each check.
+			if idx := strings.Index(check, "\n# "); idx >= 0 {
+				end := strings.Index(check[idx+3:], "\n")
+				if end > 0 {
+					fmt.Printf("  %s\n", check[idx+3:idx+3+end])
+				}
+			}
+		}
+	}
+
 	if bundle.Handoff != nil {
 		fmt.Printf("\nSession handoff (%s ago):\n  %s\n",
 			time.Since(bundle.Handoff.CreatedAt).Truncate(time.Minute), bundle.Handoff.Summary)

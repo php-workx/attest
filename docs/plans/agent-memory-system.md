@@ -141,26 +141,30 @@ type SessionHandoff struct {
 
 ```go
 type QueryOpts struct {
-    Tags          []string  // match any tag (union with Paths)
-    Category      Category  // exact category match
-    Paths         []string  // match learnings with overlapping SourcePaths (union with Tags)
-    MinEffectiveness float64 // effectiveness threshold (default 0.0)
-    Limit         int       // max results (0 = unlimited)
-    SortBy        string    // "effectiveness" (default), "created_at"
+    Tags             []string // match any tag (union with Paths and SearchText)
+    Category         Category // exact category match
+    Paths            []string // match learnings with overlapping SourcePaths (union with Tags)
+    SearchText       string   // full-text search across Content, Summary, Tags (union with Tags/Paths)
+    MinEffectiveness float64  // effectiveness threshold (default 0.0)
+    Limit            int      // max results (0 = unlimited)
+    SortBy           string   // "effectiveness" (default), "created_at"
 }
 ```
 
-Tag and path matching uses union semantics: a learning matches if it matches any tag OR any path.
+Tag, path, and search text matching uses union semantics: a learning matches if it matches any tag OR any path OR the search text.
 
 #### Store interface
 
 ```go
 type Store struct {
-    Dir string         // .attest/learnings/
-    Now func() time.Time // clock injection for tests; defaults to time.Now
+    SharedDir  string           // committed path: .attest/learnings/ (redacted content)
+    LocalDir   string           // local-only path: .git/attest/learnings/ (unredacted, optional)
+    Scanner    *ContentScanner  // content scanner (nil = no scanning)
+    Now        func() time.Time // clock injection for tests; defaults to time.Now
 }
 
-func NewStore(dir string) *Store
+func NewStore(dir string) *Store                          // backward-compatible single-dir
+func NewStoreWithLocalDir(sharedDir, localDir string) *Store // split mode with scanning
 
 // Write operations
 func (s *Store) Add(l *Learning) error
@@ -189,10 +193,11 @@ The engine must not import `internal/learning` (same constraint as engine→tick
 
 ```go
 type LearningQueryOpts struct {
-    Tags              []string
-    Paths             []string
-    MinEffectiveness  float64
-    Limit             int
+    Tags             []string
+    Paths            []string
+    SearchText       string
+    MinEffectiveness float64
+    Limit            int
 }
 
 type LearningEnricher interface {
@@ -313,10 +318,10 @@ type ContextBundle struct {
     TokenBudget int             `json:"token_budget"`
 }
 
-func (s *Store) AssembleContext(taskID string, tags, paths []string) (*ContextBundle, error)
+func (s *Store) AssembleContext(taskID string, tags, paths []string, searchText string) (*ContextBundle, error)
 ```
 
-Tag and path matches are unioned by learning ID, sorted by effectiveness, capped at 8 learnings and 2000 tokens. Records outcome-tracking attachment (increments `AttachCount`, updates `LastAttachedAt`).
+Tag, path, and search text matches are unioned by learning ID, sorted by effectiveness, capped at 8 learnings and 2000 tokens. Read-only — does not modify the store. Outcome tracking happens later via `RecordOutcome` in `VerifyTask`.
 
 ### 3.5 CLI Commands
 
@@ -431,8 +436,8 @@ Extraction lives in `cmd/attest/extract.go`, not in engine or councilflow.
 
 ## 10. Data Privacy: Split Stores, Content Scanning, and Optional Encryption
 
-**Status:** Planned
-**Date:** 2026-03-21
+**Status:** Implemented (Layer 1 + Layer 2; Layer 3 encryption deferred)
+**Date:** 2026-03-22
 
 ### 10.1 Problem
 
@@ -457,7 +462,7 @@ Passphrase-based (`ATTEST_LEARNING_PASSPHRASE`). Only `Content` field encrypted 
 
 ## 11. Phase 3: Outcome-Based Learning Quality
 
-**Status:** Planned (replaces prior "Flywheel" design)
+**Status:** Implemented
 **Date:** 2026-03-22
 
 ### 11.1 Rationale for Simplification
@@ -569,7 +574,7 @@ Injection points:
 ```
 1. Run starts → compile tasks with learning enrichment
    ├─ Tasks get Warnings (anti_pattern) and Constraints (codebase/tooling)
-   └─ AttachCount incremented for each injected learning
+   └─ LearningIDs attached to tasks (outcome tracked later at verify time)
 
 2. Tech-spec review → council reviewers see prevention checks
    └─ High-effectiveness learnings compiled as "Prior findings"
