@@ -1566,3 +1566,152 @@ func TestCompileWithoutLearningEnricher(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewExecutionPlanRejectsUncoveredRequirement(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-uncovered")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	// Artifact has 3 requirements; plan only covers 2.
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-uncovered",
+		Requirements: []state.Requirement{
+			{ID: "AT-FR-001", Text: "Requirement 1"},
+			{ID: "AT-FR-002", Text: "Requirement 2"},
+			{ID: "AT-FR-003", Text: "Requirement 3"},
+		},
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-uncovered",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-002", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail when a requirement is uncovered")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "uncovered_requirement" {
+			found = true
+			if len(f.RequirementIDs) != 1 || f.RequirementIDs[0] != "AT-FR-003" {
+				t.Errorf("expected AT-FR-003 in finding, got: %v", f.RequirementIDs)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected uncovered_requirement finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestReviewExecutionPlanWarnsOnDuplicateCoverage(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-dup-cov")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-dup-cov",
+		Requirements: []state.Requirement{
+			{ID: "AT-FR-001", Text: "Requirement 1"},
+		},
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	// Two slices cover the same requirement.
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-dup-cov",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-002", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	// Should pass (duplicate coverage is a warning, not a blocker).
+	if review.Status != state.ReviewPass {
+		t.Fatalf("review should pass with duplicate coverage (warning only), got: %s", review.Status)
+	}
+	found := false
+	for _, w := range review.Warnings {
+		if strings.Contains(w.Summary, "AT-FR-001") && strings.Contains(w.Summary, "2 slices") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected duplicate coverage warning for AT-FR-001, got warnings: %+v", review.Warnings)
+	}
+}
+
+func TestReviewExecutionPlanPassesWithFullCoverage(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-full-cov")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-full-cov",
+		Requirements: []state.Requirement{
+			{ID: "AT-FR-001", Text: "Requirement 1"},
+			{ID: "AT-FR-002", Text: "Requirement 2"},
+		},
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-full-cov",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-002", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewPass {
+		t.Fatalf("review should pass with full coverage, got: %s (findings: %+v)", review.Status, review.BlockingFindings)
+	}
+}
