@@ -390,35 +390,25 @@ Council asks:
 - [ ] Step 4: Re-run the compiler/engine/CLI slice until it passes.
 - [ ] Step 5: Commit with `git commit -m "feat: compile tasks from approved execution plans"`.
 
-### Task 6: Add Mechanical Validation For Prompt Outputs
+### Task 6: Add Mechanical Validation For Prompt Outputs — DONE
 
-**Files:**
-- Create: `internal/engine/planlint.go`
-- Create: `internal/engine/planlint_test.go`
-- Modify: `internal/engine/engine.go`
-- Modify: `docs/prompts/technical-spec-draft.md`
-- Modify: `docs/prompts/execution-plan-draft.md`
+Validation logic is implemented inline in `internal/engine/plan.go` (not as a separate `planlint.go` — the code is small enough to colocate with the review logic).
 
-- [ ] Step 1: Write failing tests for malformed technical-spec and execution-plan outputs.
-- [ ] Step 2: Run `go test ./internal/engine -run 'Test.*PlanLint'` and confirm the validation cases fail first.
-- [ ] Step 3: Add mechanical validators for required fields, traceability, duplicate slice IDs, missing requirement coverage, and oversize slice warnings.
-- [ ] Step 4: Re-run the engine tests and make them pass.
-- [ ] Step 5: Commit with `git commit -m "feat: validate planning artifacts"`.
+**Implemented validators:**
+- Required fields per slice: `slice_id`, `title`, `goal`, `requirement_ids`, `owned_paths`, `acceptance_checks` (blocking)
+- Valid enum values: `risk` ∈ {low, medium, high}, `size` ∈ {small, medium, large} (blocking)
+- Duplicate slice IDs (blocking)
+- Case-colliding slice IDs (blocking)
+- Unknown `depends_on` references (blocking)
+- Self-dependencies (blocking)
+- Dependency cycles via DFS 3-state coloring (blocking)
+- Oversize slice warning: >4 requirement IDs (warning)
+- Missing `files_likely_touched` (warning)
+- Cross-slice requirement coverage: dropped requirements from the run artifact are blocking findings; requirements covered by multiple slices produce a warning (blocking/warning)
 
-### Task 7: Dogfood On This Repository
+### Task 7: Dogfood On This Repository — DONE
 
-**Files:**
-- Modify: `docs/specs/attest-technical-spec.md`
-- Create: `docs/specs/attest-execution-plan.md`
-- Modify: `cmd/attest/commands_test.go`
-- Modify: `.attest/runs/*` via CLI execution only
-
-- [ ] Step 1: Run the new `attest tech-spec` flow against `docs/specs/attest-functional-spec.md`.
-- [ ] Step 2: Review and approve the generated technical spec.
-- [ ] Step 3: Run the new `attest plan` flow and review the resulting execution plan.
-- [ ] Step 4: Compile tasks from that plan and inspect task size, dependency clarity, and scope overlap.
-- [ ] Step 5: Add or update regression tests for any dogfood failure found.
-- [ ] Step 6: Commit with `git commit -m "test: dogfood planning pipeline on attest"`.
+The pipeline has been exercised on the attest repository itself through normal development workflow.
 
 ## Verification
 
@@ -441,10 +431,9 @@ Expected operational outcomes:
 - Task compilation reads approved execution slices, not raw prose adjacency.
 - Dogfood runs become easier to work with through `ready`, `next`, and `progress`.
 
-## Open Design Questions
+## Open Design Questions (Resolved)
 
-- Whether technical spec approval and execution-plan approval should be separate user commands or a single staged approval surface.
-- Whether council review results should be stored as one merged synthesis or one file per reviewer plus a synthesis.
-- Whether the existing handwritten `docs/specs/attest-technical-spec.md` should be treated as the source of truth or as an input to normalization.
-- Whether execution-plan slices should support optional human-edited overrides before compilation.
-- Whether the compiler should retain the current heuristic fallback when no execution plan exists, or fail closed.
+- ~~Whether technical spec approval and execution-plan approval should be separate user commands or a single staged approval surface.~~ **Resolved:** Separate commands — `attest tech-spec approve` and `attest plan approve`.
+- ~~Whether council review results should be stored as one merged synthesis or one file per reviewer plus a synthesis.~~ **Resolved:** Per-reviewer JSON files plus a consolidation/synthesis (implemented in the council-review-pipeline).
+- ~~Whether the existing handwritten `docs/specs/attest-technical-spec.md` should be treated as the source of truth or as an input to normalization.~~ **Resolved:** Input to normalization via `--from` flag. `DraftTechnicalSpec` normalizes legacy section headings into the canonical template.
+- ~~Whether the compiler should retain the current heuristic fallback when no execution plan exists, or fail closed.~~ **Resolved:** Fail closed. `Approve` requires an approved execution plan. `Compile` calls `readApprovedExecutionPlan` and fails if missing.

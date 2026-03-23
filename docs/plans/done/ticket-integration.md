@@ -67,9 +67,7 @@ Beads created friction — git hooks, auto-commits, overhead. Ticket (`wedow/tic
 
 9. **Unknown field preservation** (pm-012 resolution): `TicketFrontmatter` includes `Extra map[string]interface{} \`yaml:",inline"\`` to preserve any YAML fields not in our struct. This ensures forward compatibility with future `tk` versions.
 
-10. **Dual-write transition**: Initially write both `tasks.json` and `.tickets/`. Drop JSON after validation.
-
-11. **Swappable**: To replace Ticket, implement `TaskStore` in a new package. Change one constructor in `cmd/attest/main.go`.
+10. **Swappable**: To replace Ticket, implement `TaskStore` in a new package. Change one constructor in `cmd/attest/main.go`.
 
 ### TaskStore Interface
 
@@ -563,20 +561,14 @@ Replace call sites (pm-001: corrected counts — 11 engine + 6 CLI = 17 total):
 
 ---
 
-### Stage 3: CLI integration + dual-write
+### Stage 3: CLI integration
 
-Compiler writes `.tickets/` alongside `tasks.json`.
+Wire `ticket.Store` as the sole task backend in the CLI.
 
 **Modified files:**
-- `cmd/attest/main.go` — In `cmdApprove`, after engine creation:
-  ```go
-  ticketStore := ticket.NewStore(filepath.Join(wd, ".tickets"))
-  eng.TaskStore = ticketStore
-  ```
+- `cmd/attest/tasks.go` — `taskStoreForRun` constructs `ticket.NewStore(filepath.Join(wd, ".tickets"))`
+- `cmd/attest/main.go` — `newEngine` calls `taskStoreForRun` and sets `eng.TaskStore`
 - Engine's `Compile()` already calls `taskStore().WriteTasks()` (from Stage 2), so Ticket files are created automatically
-- For dual-write: `Compile()` calls both `e.RunDir.WriteTasks()` AND `e.taskStore().WriteTasks()`
-
-**Validation**: After compile, run `tk ready` and `attest ready <run-id>` — both should show the same tasks.
 
 ---
 
@@ -596,17 +588,6 @@ Replace read-all/mutate-one/write-all with per-file operations.
 
 ---
 
-### Stage 5: Drop tasks.json
-
-Ticket is sole source of truth. Add `attest migrate-tasks <run-id>` for existing runs.
-
-**Modified files:**
-- `internal/state/rundir.go` — Mark `Tasks()`, `ReadTasks()`, `WriteTasks()` as deprecated
-- `cmd/attest/main.go` — Always construct and use `ticket.Store`
-- New command: `attest migrate-tasks <run-id>` reads `tasks.json` and writes `.tickets/*.md`
-
----
-
 ## Files to Modify (complete)
 
 | File | Stage | Change |
@@ -621,9 +602,9 @@ Ticket is sole source of truth. Add `attest migrate-tasks <run-id>` for existing
 | `go.mod` | 1 | ADD `gopkg.in/yaml.v3` dependency |
 | `internal/state/types.go` | 2 | ADD `TaskStore` interface |
 | `internal/state/rundir.go` | 2 | ADD `ReadTask`, `WriteTask`, `UpdateStatus` wrappers |
-| `internal/engine/engine.go` | 2,4 | ADD TaskStore field, replace 23 call sites, refactor 3 functions |
+| `internal/engine/engine.go` | 2, 4 | ADD TaskStore field, replace call sites, refactor 3 functions |
 | `cmd/attest/tasks.go` | 2 | Wire 5 commands through TaskStore |
-| `cmd/attest/main.go` | 3,5 | Construct ticket.Store, set on engine |
+| `cmd/attest/main.go` | 3 | Construct ticket.Store, set on engine |
 
 ## Dependencies
 
@@ -654,7 +635,7 @@ Add to `.gitignore`:
 | Performance at 100+ tickets | Slow ReadTasks | Cache in memory with directory mtime invalidation |
 | YAML field ordering changes | Diffs are noisy | Use ordered YAML emission (field order from struct tags) |
 | Multi-run task contamination | Wrong tasks in queries | Parent-based scoping: runs are epics, tasks are children (pm-006) |
-| Existing runs break after integration | No tasks found | RunDir fallback for runs without epic ticket (pm-005) |
+| Existing runs break after integration | No tasks found | RunDir fallback via `AsTaskStore()` for runs without epic ticket (pm-005) |
 | Body content destroyed on WriteTask | Notes/descriptions lost | WriteTask updates frontmatter only, preserves body (pm-013) |
 | ETag mismatch after YAML round-trip | Spurious concurrency failures | ETag always computed via canonical JSON, not YAML (pm-011) |
 | `tk dep cycle` confused by `attest_status` | Misleading cycle reports | Document interaction, add tests for edge cases (pm-007) |
@@ -663,24 +644,20 @@ Add to `.gitignore`:
 
 | Stage | Merge independently? | Done when |
 |-------|---------------------|-----------|
-| 1 | Yes (with Stage 2) | All 27 tests pass, `tk show` reads Go-written files |
+| 1 | Yes (with Stage 2) | All tests pass, `tk show` reads Go-written files |
 | 2 | Yes (with Stage 1) | All existing engine tests pass unchanged |
-| 3 | Yes | `attest approve` produces both formats, `tk ready` matches `attest ready` |
+| 3 | Yes | `attest approve` produces `.tickets/`, `tk ready` matches `attest ready` |
 | 4 | Yes | Single-task updates work, flock tests pass |
-| 5 | Yes | `just pre-commit` passes with `tasks.json` methods removed |
 
 **Minimum shippable unit**: Stages 1+2 together (interface + implementation). Stage 1 alone is dead code.
-
-**Stage 3 dual-write validation** (pm-016): After compile, automatically compare task counts and IDs between `tasks.json` and `.tickets/`. Log warning on divergence.
 
 ## Verification
 
 1. **Stage 1**: Write task via Go → `tk show` reads it. Create via `tk create` → Go reads it. Round-trip: Task → markdown → Task = identical.
 2. **Stage 2**: All existing tests pass (engine falls back to JSON via RunDir).
-3. **Stage 3**: `attest approve` writes both formats. `tk ready` matches `attest ready`.
+3. **Stage 3**: `attest approve` produces `.tickets/`. `tk ready` matches `attest ready`.
 4. **Stage 4**: `attest verify` updates single ticket file. `tk show` reflects status.
-5. **Stage 5**: `just pre-commit` passes. All task commands work from `.tickets/` only.
-6. **End-to-end**: prepare → compile → `tk ready` → agent `tk start` → verify → `tk show` = closed.
+5. **End-to-end**: prepare → compile → `tk ready` → agent `tk start` → verify → `tk show` = closed.
 
 ---
 
@@ -705,6 +682,6 @@ Add to `.gitignore`:
 | pm-009 | moderate | `omitempty` on `Order` drops zero | Removed `omitempty` from `Order` |
 | pm-010 | moderate | Who calls `Init()`? | WriteTasks auto-creates directory |
 | pm-015 | moderate | No stage acceptance criteria | Added criteria table |
-| pm-016 | moderate | Dual-write has no consistency check | Auto-compare after compile |
+| pm-016 | moderate | Dual-write has no consistency check | N/A — dual-write removed from plan |
 | pm-017 | moderate | `parent` vs `parent_task_id` confusion | Unified: tk `parent` = attest parent |
 | pm-018 | moderate | Time format undefined | `time.RFC3339`, always UTC |
