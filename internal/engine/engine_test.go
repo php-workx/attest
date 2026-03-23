@@ -2,12 +2,14 @@ package engine_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/runger/attest/internal/agentcli"
 	"github.com/runger/attest/internal/compiler"
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
@@ -413,9 +415,9 @@ Open questions.
 	}
 }
 
-func TestDraftTechnicalSpec_NonCanonicalPassThrough(t *testing.T) {
+func TestDraftTechnicalSpec_NoNormalizePassThrough(t *testing.T) {
 	dir := t.TempDir()
-	runDir := state.NewRunDir(dir, "run-normalize")
+	runDir := state.NewRunDir(dir, "run-no-norm")
 	if err := runDir.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -433,27 +435,14 @@ Architecture paragraph with important details.
 
 ## 3. Canonical artifacts
 Artifacts paragraph with important details.
-
-## 5. CLI surface
-Interfaces paragraph with important details.
-
-## 11. Council checkpoints and verification pipeline
-Verification paragraph with important details.
-
-## 17. Acceptance scenarios
-- **AT-TS-001**: Deterministic review.
-
-## 19. Open v1 decisions
-Open questions paragraph with important details.
-
-- every implementation task must trace to requirement IDs from this spec
 `
 	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
 		t.Fatalf("WriteFile(source): %v", err)
 	}
 
 	eng := engine.New(runDir, dir)
-	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath); err != nil {
+	// noNormalize=true: agent should not be called, original content preserved.
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, true); err != nil {
 		t.Fatalf("DraftTechnicalSpec: %v", err)
 	}
 
@@ -463,22 +452,107 @@ Open questions paragraph with important details.
 	}
 	got := string(data)
 
-	// Non-canonical doc must pass through with original content preserved.
+	// Original headings must be preserved verbatim.
 	for _, heading := range []string{
 		"## 1. Implementation decisions",
 		"## 2. System architecture",
 		"## 3. Canonical artifacts",
-		"## 5. CLI surface",
-		"## 11. Council checkpoints and verification pipeline",
-		"## 19. Open v1 decisions",
 	} {
 		if !strings.Contains(got, heading) {
 			t.Fatalf("original heading %q was lost — content must be preserved:\n%s", heading, got)
 		}
 	}
-	// Content must not be truncated.
 	if len(data) < len([]byte(spec))-10 {
 		t.Fatalf("content truncated: output %d bytes, input %d bytes", len(data), len([]byte(spec)))
+	}
+}
+
+func TestDraftTechnicalSpec_AgentFallbackOnError(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-agent-err")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "non-canonical.md")
+	spec := `# My Custom Spec
+
+## Overview
+This is a free-form document with no canonical headings.
+
+## Details
+Lots of important content here that must not be lost.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Stub agent to fail.
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return "", fmt.Errorf("agent unavailable")
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Original content must be preserved when agent fails.
+	if !strings.Contains(string(data), "## Overview") {
+		t.Fatalf("original content lost after agent failure:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "Lots of important content") {
+		t.Fatalf("original content lost after agent failure:\n%s", string(data))
+	}
+}
+
+func TestDraftTechnicalSpec_AgentFallbackOnShortOutput(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-agent-short")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "non-canonical.md")
+	spec := `# My Custom Spec
+
+## Overview
+This is a free-form document with content that spans multiple paragraphs.
+
+## Details
+Lots of important content here that must not be lost. This paragraph
+contains enough text that a 10-byte agent response would clearly be
+too short to preserve the content.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Stub agent to return suspiciously short output.
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return "too short", nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Original content must be preserved when agent output is too short.
+	if !strings.Contains(string(data), "## Overview") {
+		t.Fatalf("original content lost after short agent output:\n%s", string(data))
 	}
 }
 

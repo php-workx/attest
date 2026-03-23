@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runger/attest/internal/agentcli"
 	"github.com/runger/attest/internal/councilflow"
 	"github.com/runger/attest/internal/state"
 )
@@ -93,14 +94,20 @@ var technicalSpecRequirements = []technicalSpecRequirement{
 }
 
 // DraftTechnicalSpec records a run-scoped technical spec markdown artifact.
-func (e *Engine) DraftTechnicalSpec(ctx context.Context, sourcePath string) error {
-	_ = ctx
-
+// If noNormalize is false, attempts agent-based normalization for non-canonical docs.
+func (e *Engine) DraftTechnicalSpec(ctx context.Context, sourcePath string, noNormalize bool) error {
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return fmt.Errorf("read technical spec source: %w", err)
 	}
-	data = normalizeTechnicalSpec(data)
+	if !noNormalize && !hasCanonicalTechnicalSpecHeadings(strings.ToLower(string(data))) {
+		fmt.Println("Document doesn't match canonical headings — attempting agent normalization ...")
+		if normalized, normErr := normalizeWithAgent(ctx, data); normErr == nil {
+			data = normalized
+		} else {
+			fmt.Printf("Agent normalization unavailable (%v) — using original document\n", normErr)
+		}
+	}
 	if err := e.RunDir.WriteTechnicalSpec(data); err != nil {
 		return fmt.Errorf("write technical spec: %w", err)
 	}
@@ -266,14 +273,6 @@ func containsAny(haystack string, needles []string) bool {
 	return false
 }
 
-func normalizeTechnicalSpec(data []byte) []byte {
-	lower := strings.ToLower(string(data))
-	if hasCanonicalTechnicalSpecHeadings(lower) {
-		return data
-	}
-	return data // pass through unchanged — don't attempt lossy rewrite
-}
-
 func hasCanonicalTechnicalSpecHeadings(text string) bool {
 	for _, requirement := range technicalSpecRequirements {
 		if !strings.Contains(text, strings.ToLower(requirement.canonicalHeading)) {
@@ -281,4 +280,68 @@ func hasCanonicalTechnicalSpecHeadings(text string) bool {
 		}
 	}
 	return true
+}
+
+const technicalSpecNormalizationPrompt = `You are a technical document reformatter. Your job is to reorganize an existing document into a canonical 8-section template.
+
+## Canonical Sections
+
+## 1. Technical context — Language, runtime, dependencies, constraints
+## 2. Architecture — Components, data flow, concurrency model
+## 3. Canonical artifacts and schemas — File paths, producers, consumers, schemas
+## 4. Interfaces — CLI/API surface, state machines, transitions
+## 5. Verification — Quality gates, acceptance scenarios, evidence requirements
+## 6. Requirement traceability — Requirement IDs mapped to technical mechanisms
+## 7. Open questions and risks — Unresolved decisions and their impact
+## 8. Approval — Draft/review/approval status
+
+## Rules
+
+1. Preserve ALL content from the source document. Do not summarize, abbreviate, or omit any information.
+2. Map source content to the closest matching canonical section. If content does not clearly fit any section, place it under "## Additional Content" at the end rather than dropping it.
+3. Do not invent content that is not in the source document.
+4. Preserve code blocks, tables, lists, and formatting from the source.
+5. If the source has sections beyond the 8 canonical ones, include them after the canonical sections.
+
+## Output
+
+Return ONLY the reformatted markdown document. No explanation, no commentary, no wrapping code fences.
+`
+
+// normalizeWithAgent uses an LLM to reformat a document into the canonical
+// 8-section technical spec template. Returns an error if the agent is
+// unavailable, times out, or produces suspicious output.
+func normalizeWithAgent(ctx context.Context, data []byte) ([]byte, error) {
+	prompt := technicalSpecNormalizationPrompt + "\n## Source Document\n\n" + string(data)
+
+	backend := agentcli.KnownBackends[agentcli.BackendClaude]
+	output, err := agentcli.InvokeFunc(ctx, &backend, prompt, 120)
+	if err != nil {
+		return nil, fmt.Errorf("agent invocation: %w", err)
+	}
+
+	// Strip code fences if the model wrapped the output.
+	if stripped := agentcli.ExtractFromCodeFence(output); stripped != "" {
+		output = stripped
+	}
+	result := []byte(strings.TrimSpace(output))
+
+	// Output validation: reject suspiciously short output.
+	if len(result) < len(data)/2 {
+		return nil, fmt.Errorf("output too short (%d bytes vs %d input bytes)", len(result), len(data))
+	}
+
+	// Output validation: require at least 4 canonical headings.
+	lower := strings.ToLower(string(result))
+	headingCount := 0
+	for _, req := range technicalSpecRequirements {
+		if strings.Contains(lower, strings.ToLower(req.canonicalHeading)) {
+			headingCount++
+		}
+	}
+	if headingCount < 4 {
+		return nil, fmt.Errorf("output has only %d of 8 canonical headings (need at least 4)", headingCount)
+	}
+
+	return result, nil
 }
