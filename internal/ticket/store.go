@@ -75,43 +75,53 @@ func (s *Store) WriteTasks(runID string, tasks []state.Task) error {
 		return fmt.Errorf("create run epic: %w", err)
 	}
 
-	// Build set of new task IDs for orphan detection.
 	newIDs := make(map[string]struct{}, len(tasks))
 	for i := range tasks {
 		newIDs[tasks[i].TaskID] = struct{}{}
 	}
 
-	// Write new/updated tasks.
 	for i := range tasks {
-		task := tasks[i] // copy — do not mutate caller's slice
-		if err := ValidateID(task.TaskID); err != nil {
-			return fmt.Errorf("invalid task ID %s: %w", task.TaskID, err)
-		}
-		task.ParentTaskID = runID
-		path := filepath.Join(s.Dir, task.TaskID+".md")
-
-		// If file exists, preserve body via frontmatter-only update.
-		if existing, readErr := os.ReadFile(path); readErr == nil {
-			updated, fmErr := UpdateFrontmatter(existing, &task)
-			if fmErr == nil {
-				if writeErr := atomicWrite(path, updated); writeErr != nil {
-					return fmt.Errorf("update task %s: %w", task.TaskID, writeErr)
-				}
-				continue
-			}
-		}
-
-		// New file — full marshal.
-		data, err := MarshalTicket(&task)
-		if err != nil {
-			return fmt.Errorf("marshal task %s: %w", task.TaskID, err)
-		}
-		if err := s.writeFile(task.TaskID, data); err != nil {
-			return fmt.Errorf("write task %s: %w", task.TaskID, err)
+		if err := s.writeOrUpdateTask(runID, &tasks[i]); err != nil {
+			return err
 		}
 	}
 
-	// Remove orphaned tasks from previous compilations.
+	s.removeOrphanedTasks(runID, newIDs)
+	return nil
+}
+
+// writeOrUpdateTask writes a single task, preserving the body if the file already exists.
+func (s *Store) writeOrUpdateTask(runID string, task *state.Task) error {
+	taskCopy := *task // copy — do not mutate caller's slice
+	if err := ValidateID(taskCopy.TaskID); err != nil {
+		return fmt.Errorf("invalid task ID %s: %w", taskCopy.TaskID, err)
+	}
+	taskCopy.ParentTaskID = runID
+	path := filepath.Join(s.Dir, taskCopy.TaskID+".md")
+
+	// If file exists, preserve body via frontmatter-only update.
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		if updated, fmErr := UpdateFrontmatter(existing, &taskCopy); fmErr == nil {
+			if writeErr := atomicWrite(path, updated); writeErr != nil {
+				return fmt.Errorf("update task %s: %w", taskCopy.TaskID, writeErr)
+			}
+			return nil
+		}
+	}
+
+	// New file — full marshal.
+	data, err := MarshalTicket(&taskCopy)
+	if err != nil {
+		return fmt.Errorf("marshal task %s: %w", taskCopy.TaskID, err)
+	}
+	if err := s.writeFile(taskCopy.TaskID, data); err != nil {
+		return fmt.Errorf("write task %s: %w", taskCopy.TaskID, err)
+	}
+	return nil
+}
+
+// removeOrphanedTasks removes tasks from previous compilations that are not in the new set.
+func (s *Store) removeOrphanedTasks(runID string, newIDs map[string]struct{}) {
 	existing, _ := s.ReadTasks(runID)
 	for i := range existing {
 		if _, ok := newIDs[existing[i].TaskID]; !ok {
@@ -119,8 +129,6 @@ func (s *Store) WriteTasks(runID string, tasks []state.Task) error {
 			_ = os.Remove(orphanPath) // best-effort cleanup
 		}
 	}
-
-	return nil
 }
 
 // ReadTask reads a single task by ID (supports partial matching).

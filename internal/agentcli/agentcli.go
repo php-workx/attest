@@ -187,10 +187,15 @@ func ExtractJSONBlock(s string, idx int) string {
 	if open == '[' {
 		closeCh = ']'
 	}
+	return scanBalanced(s, idx, open, closeCh)
+}
+
+// scanBalanced scans for a balanced pair of open/close delimiters, respecting JSON strings.
+func scanBalanced(s string, start int, open, closeCh byte) string {
 	depth := 0
 	inStr := false
 	esc := false
-	for i := idx; i < len(s); i++ {
+	for i := start; i < len(s); i++ {
 		ch := s[i]
 		if esc {
 			esc = false
@@ -213,7 +218,7 @@ func ExtractJSONBlock(s string, idx int) string {
 		case closeCh:
 			depth--
 			if depth == 0 {
-				return s[idx : i+1]
+				return s[start : i+1]
 			}
 		}
 	}
