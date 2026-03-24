@@ -374,7 +374,7 @@ func TestReviewTechnicalSpecAcceptsLegacyHeadings(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	spec := `# attest Technical Specification
+	spec := `# fabrikk Technical Specification
 
 Status: Draft (post-review revision)
 
@@ -423,7 +423,7 @@ func TestDraftTechnicalSpec_NoNormalizePassThrough(t *testing.T) {
 	}
 
 	sourcePath := filepath.Join(dir, "legacy-technical-spec.md")
-	spec := `# attest Technical Specification
+	spec := `# fabrikk Technical Specification
 
 Status: Draft (post-review revision)
 

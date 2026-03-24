@@ -169,7 +169,7 @@ func (s *Store) WriteTask(task *state.Task) error {
 	})
 }
 
-// UpdateStatus updates a task's status (both attest_status and tk status).
+// UpdateStatus updates a task's status (both extended_status and tk status).
 // Read and write are inside the same lock to prevent race conditions.
 func (s *Store) UpdateStatus(taskID string, status state.TaskStatus, reason string) error {
 	resolvedID, err := ResolveID(s.Dir, taskID)

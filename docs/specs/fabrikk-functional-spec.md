@@ -1,4 +1,4 @@
-# attest Functional Specification
+# fabrikk Functional Specification
 
 Version: 0.5
 Status: Draft
@@ -768,7 +768,7 @@ Test-first mode is not the default — it is enabled per-run or per-task. It is 
 
 - **AT-NFR-001**: v1 must work from local agent CLI workflows without requiring hosted orchestration.
 - **AT-NFR-002**: Run state must survive process exit, crash, and session loss via disk-based wave checkpoints and ratcheted progress.
-- **AT-NFR-003**: Resuming a run must be idempotent — re-executing attest against the same run produces the same outcome as continuing from the checkpoint.
+- **AT-NFR-003**: Resuming a run must be idempotent — re-executing fabrikk against the same run produces the same outcome as continuing from the checkpoint.
 - **AT-NFR-004**: The system must favor correctness over cheapest-token routing when the two are in tension.
 - **AT-NFR-005**: The system must use lower-cost model tiers (Sonnet for workers, Haiku for wave judges) for routine work by default.
 - **AT-NFR-006**: The system must be transparent about what is approved, verified, blocked, and assumed.

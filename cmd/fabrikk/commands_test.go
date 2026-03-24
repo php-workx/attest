@@ -124,7 +124,7 @@ func TestCmdReviewShowsAwaitingApproval(t *testing.T) {
 			RiskProfile:   "standard",
 			SourceSpecs: []state.SourceSpec{
 				{
-					Path:        "specs/attest.md",
+					Path:        "specs/fabrikk.md",
 					Fingerprint: strings.Repeat("a", 64),
 				},
 			},

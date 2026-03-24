@@ -1,4 +1,4 @@
-# attest Technical Specification
+# fabrikk Technical Specification
 
 Version: 0.3
 Status: Draft (post-review revision)
@@ -172,7 +172,7 @@ source specs
 
 ### 2.4 Run engine lifecycle
 
-`attest launch` starts a detached run engine process for one approved run.
+`fabrikk launch` starts a detached run engine process for one approved run.
 
 The engine lifecycle is:
 
@@ -204,7 +204,7 @@ Heartbeat behavior:
 
 v1 process model:
 
-- the run engine is a separate long-lived OS process spawned by `attest launch`
+- the run engine is a separate long-lived OS process spawned by `fabrikk launch`
 - it must detach from the launching terminal and continue after the parent session exits
 - it must not rely on transcript memory, shell job control, or a foreground goroutine for survival
 - it is the only process allowed to dispatch tasks or mutate canonical run state for that run
@@ -213,13 +213,13 @@ Host restart behavior:
 
 - a host reboot kills the engine
 - the run remains durable on disk
-- the next `attest resume <run-id>` must detect the dead engine, expire any stale claim, and restart the engine if the run state is resumable
+- the next `fabrikk resume <run-id>` must detect the dead engine, expire any stale claim, and restart the engine if the run state is resumable
 
 ### 2.5 Reattachment model
 
 Reattachment reads repo-local state only. It must not require transcript history or in-memory process state.
 
-`attest resume <run-id>` rules:
+`fabrikk resume <run-id>` rules:
 
 - if the engine is alive, reattach as observer and renderer only
 - if the engine is stale and the run state is resumable, expire stale claim state and restart the engine
@@ -360,7 +360,7 @@ Field rules:
 
 Relationship rules:
 
-- `depends_on` is the canonical hard dependency edge used for dispatchability and `attest ready`
+- `depends_on` is the canonical hard dependency edge used for dispatchability and `fabrikk ready`
 - runtime blockers such as reviewer findings, backend outages, or human-input requirements live in `run-status.json`, not `tasks.json`
 - `parent_task_id` groups repair or follow-up tasks under their originating task when a lineage is split
 - canonical task ownership is expressed through claims, not through an `assignee` field on the task
@@ -531,7 +531,7 @@ If a canonical JSON artifact fails to parse:
 
 - the run moves to `failed`
 - `run-status.json` must record `state_corruption`
-- `attest explain` must surface the corrupted file path
+- `fabrikk explain` must surface the corrupted file path
 
 v1 does not attempt automatic repair of corrupted canonical artifacts.
 
@@ -539,7 +539,7 @@ v1 does not attempt automatic repair of corrupted canonical artifacts.
 
 Only one active run may exist per repository in v1.
 
-If another run is active, `attest launch` must fail with a clear operator error.
+If another run is active, `fabrikk launch` must fail with a clear operator error.
 
 Inside a run, multiple active workers are allowed only when:
 
@@ -564,26 +564,26 @@ If migration is required, it must happen before dispatching any worker.
 
 v1 command surface:
 
-- `attest prepare --spec <path> [--spec <path>...]`
-- `attest review <run-id>`
-- `attest approve <run-id> [--launch]`
-- `attest launch <run-id>`
-- `attest tasks <run-id>`
-- `attest ready <run-id>`
-- `attest blocked <run-id>`
-- `attest next <run-id>`
-- `attest progress <run-id>`
-- `attest status [<run-id>]`
-- `attest explain <run-id>`
-- `attest resume <run-id>`
-- `attest verify <run-id> <task-id>`
-- `attest council <run-id> <task-id>`
-- `attest defer <run-id> <requirement-id> --reason <text>`
-- `attest stop <run-id>`
+- `fabrikk prepare --spec <path> [--spec <path>...]`
+- `fabrikk review <run-id>`
+- `fabrikk approve <run-id> [--launch]`
+- `fabrikk launch <run-id>`
+- `fabrikk tasks <run-id>`
+- `fabrikk ready <run-id>`
+- `fabrikk blocked <run-id>`
+- `fabrikk next <run-id>`
+- `fabrikk progress <run-id>`
+- `fabrikk status [<run-id>]`
+- `fabrikk explain <run-id>`
+- `fabrikk resume <run-id>`
+- `fabrikk verify <run-id> <task-id>`
+- `fabrikk council <run-id> <task-id>`
+- `fabrikk defer <run-id> <requirement-id> --reason <text>`
+- `fabrikk stop <run-id>`
 
 ### 5.2 Command semantics
 
-`attest review <run-id>`
+`fabrikk review <run-id>`
 
 - renders a human-readable approval summary for a prepared run
 - does not run model review
@@ -598,18 +598,18 @@ The approval summary must include:
 - risk classification
 - proposed task breakdown preview
 
-`attest approve <run-id> [--launch]`
+`fabrikk approve <run-id> [--launch]`
 
 - records explicit approval for the prepared run
 - with `--launch`, immediately starts the approved run after approval succeeds
 - `--launch` is the default operator fast path in v1
 
-`attest status`
+`fabrikk status`
 
 - with no `run-id`, list all runs in the repository
 - with `run-id`, render the current run summary
 
-`attest tasks <run-id>`
+`fabrikk tasks <run-id>`
 
 - renders the task read model for one run
 - must support both human-readable and `--json` output
@@ -625,44 +625,44 @@ The approval summary must include:
   - `--ready`
   - `--blocked`
 
-`attest ready <run-id>`
+`fabrikk ready <run-id>`
 
 - renders only dispatchable tasks
-- is a convenience wrapper over `attest tasks --ready`
+- is a convenience wrapper over `fabrikk tasks --ready`
 - must support `--json`
 - orders tasks by priority, then `order`, then stable `task_id`
 
-`attest blocked <run-id>`
+`fabrikk blocked <run-id>`
 
 - renders only non-dispatchable tasks with unresolved blockers
-- is a convenience wrapper over `attest tasks --blocked`
+- is a convenience wrapper over `fabrikk tasks --blocked`
 - must group blockers by reason in human-readable mode
 - must support `--json`
 
-`attest next <run-id>`
+`fabrikk next <run-id>`
 
 - returns the single highest-priority dispatchable task
 - if no task is ready, it must point the operator to the highest-impact blocker instead of returning an empty success
 - must support `--json`
 
-`attest progress <run-id>`
+`fabrikk progress <run-id>`
 
 - renders counts by task state and requirement coverage state
 - must include a completion percentage derived from task closure and requirement coverage
 - must support `--json`
 
-`attest explain <run-id>`
+`fabrikk explain <run-id>`
 
 - explains why the run is not finished
 - includes current gate, blocker, and next action
 
-`attest resume <run-id>`
+`fabrikk resume <run-id>`
 
 - observer if engine is alive
 - stale-engine recovery if engine is dead and run is resumable
 - if the run is `blocked`, surface blocker details and indicate whether automatic restart is possible or human input is required
 
-`attest stop <run-id>`
+`fabrikk stop <run-id>`
 
 - tells the engine to stop dispatching new work
 - allows in-flight workers to finish within the current lease window by default
@@ -678,7 +678,7 @@ Rules:
 - every read command that can be used by an agent must support `--json`
 - JSON output must use stable field names and include task `etag` values when tasks are returned
 - human-readable commands may group, sort, or summarize data, but the JSON mode must stay structurally predictable
-- `attest ready`, `attest blocked`, `attest next`, and `attest progress` are convenience projections over canonical run state and must not introduce separate hidden state
+- `fabrikk ready`, `fabrikk blocked`, `fabrikk next`, and `fabrikk progress` are convenience projections over canonical run state and must not introduce separate hidden state
 - v1 intentionally prefers filtered CLI read models over a general GraphQL layer
 
 ### Run lifecycle
@@ -706,14 +706,14 @@ Valid run states:
 | `preparing` | `awaiting_approval` | run artifact created | no open clarifications |
 | `awaiting_clarification` | `awaiting_approval` | all clarifications resolved | all required answers present |
 | `awaiting_approval` | `approved` | explicit user approval | artifact hash recorded |
-| `approved` | `launching` | `attest launch` | no other active run in repo |
+| `approved` | `launching` | `fabrikk launch` | no other active run in repo |
 | `launching` | `running` | engine heartbeat established | `engine.json` written |
 | `running` | `blocked` | blocker condition reached | retry policy exhausted or user input needed |
 | `running` | `completed` | run closure rule passes | section 6.6 satisfied |
 | `running` | `failed` | unrecoverable engine or state error | explicit failure reason recorded |
-| `running` | `stopped` | `attest stop` | engine stops dispatching |
+| `running` | `stopped` | `fabrikk stop` | engine stops dispatching |
 | `blocked` | `running` | blocker resolved and engine alive/restarted | run is resumable |
-| `stopped` | `launching` | `attest resume` | run is resumable |
+| `stopped` | `launching` | `fabrikk resume` | run is resumable |
 
 Terminal run states:
 
@@ -779,7 +779,7 @@ A run can transition to `completed` only when:
 
 Deferrals:
 
-- require explicit user approval via `attest defer <run-id> <requirement-id> --reason <text>`
+- require explicit user approval via `fabrikk defer <run-id> <requirement-id> --reason <text>`
 - must be recorded in `requirement-coverage.json`
 - must include a reason, timestamp, and `deferred_by` set to the approving user
 - the engine, workers, Opus synthesis, and all automated components are prohibited from creating or approving deferrals
@@ -990,7 +990,7 @@ v1 integration points:
 
 v1 policy:
 
-- detect Roam availability during `attest prepare` or `attest launch` preflight, similar to quality gate detection
+- detect Roam availability during `fabrikk prepare` or `fabrikk launch` preflight, similar to quality gate detection
 - if Roam is available, run `roam index` during preflight and store the graph path in the run artifact
 - if Roam is not available, warn the operator and proceed with path-based fallback for all affected pipeline stages
 - Roam must not own or mutate canonical `.attest/` run state
@@ -1055,9 +1055,9 @@ The preparation council:
 The preparation council result must be:
 
 - stored as `.attest/runs/<run-id>/reports/preparation-council.json`
-- presented alongside the run artifact when the user runs `attest review <run-id>`
+- presented alongside the run artifact when the user runs `fabrikk review <run-id>`
 
-If the preparation council produces blocking findings, `attest review` must surface them prominently. The user may still approve the artifact, but the blocking findings become part of the approval record.
+If the preparation council produces blocking findings, `fabrikk review` must surface them prominently. The user may still approve the artifact, but the blocking findings become part of the approval record.
 
 ### 11.2 Project quality gate
 
@@ -1079,7 +1079,7 @@ The quality gate command is expected to cover the project's standard development
 
 `attest` does not mandate which tools a project uses. It requires that the project expose one entry point that runs all of them. This is the project's own contract for "my code is clean."
 
-During preparation, `attest prepare` must detect a quality gate if one is present:
+During preparation, `fabrikk prepare` must detect a quality gate if one is present:
 
 - look for `Justfile` (target `check` or `dev`), `Makefile` (target `check` or `dev`), or `.attest/quality-gate.sh`
 - if found, propose the detected command in the draft run artifact
@@ -1234,7 +1234,7 @@ If an execution-time clarification blocks safe progress:
 
 - the affected task moves to `blocked`
 - the run moves to `blocked` when no other dispatchable work remains
-- `attest explain` must surface the exact clarification question and affected requirement IDs
+- `fabrikk explain` must surface the exact clarification question and affected requirement IDs
 
 ### Observability
 
@@ -1272,7 +1272,7 @@ For every active or blocked task, `run-status.json` must also include a task-det
 
 ### 13.2 Explainability requirements
 
-`attest explain <run-id>` must answer:
+`fabrikk explain <run-id>` must answer:
 
 - why the run is not finished
 - whether the engine is alive, stale, or stopped
@@ -1281,7 +1281,7 @@ For every active or blocked task, `run-status.json` must also include a task-det
 - which reviewer blocked progress
 - what the next action is
 
-For each blocked or active task, `attest explain` must render:
+For each blocked or active task, `fabrikk explain` must render:
 
 - the current gate
 - active backend and model
@@ -1317,7 +1317,7 @@ This section records how the requirement families in the functional spec map to 
 
 ### 14.1 Preflight checks
 
-Before `attest launch`, the system must validate:
+Before `fabrikk launch`, the system must validate:
 
 - required CLIs are on `PATH`
 - required authentication is available
@@ -1380,7 +1380,7 @@ The implementation must include coverage for:
 - deferral mechanism restricted to user-initiated approvals only
 - child repair task requirement linkage carrying only the specific uncovered IDs from the triggering finding
 - cross-task regression detection re-verifying earlier tasks when later tasks modify overlapping paths
-- preparation council review running before approval and surfacing findings in `attest review`
+- preparation council review running before approval and surfacing findings in `fabrikk review`
 - project quality gate detection during preparation
 - quality gate execution as the first verifier step, blocking model review on failure
 - quality gate preflight validation at launch time
@@ -1399,21 +1399,21 @@ The implementation must include coverage for:
 - **AT-TS-010**: A review backend outage blocks task closure after retry exhaustion.
 - **AT-TS-011**: Two tasks with disjoint `owned_paths` and no dependencies may run in the same wave.
 - **AT-TS-012**: Two tasks with overlapping `owned_paths` must not run in the same wave.
-- **AT-TS-013**: `attest review` renders a human-readable approval summary with source fingerprint, assumptions, clarifications, risk summary, and task preview.
-- **AT-TS-014**: `attest resume` on a blocked run distinguishes transient blockers from blockers that require human action.
+- **AT-TS-013**: `fabrikk review` renders a human-readable approval summary with source fingerprint, assumptions, clarifications, risk summary, and task preview.
+- **AT-TS-014**: `fabrikk resume` on a blocked run distinguishes transient blockers from blockers that require human action.
 - **AT-TS-015**: A reviewer restating the same blocking issue does not create duplicate repair tasks when the `dedupe_key` matches an existing open finding.
 - **AT-TS-016**: The scheduler dispatches higher-priority ready tasks before lower-priority ready tasks.
 - **AT-TS-017**: A worker report is not read until the worker subprocess has exited.
-- **AT-TS-018**: An execution-time clarification blocks the affected task and is surfaced by `attest explain`.
+- **AT-TS-018**: An execution-time clarification blocks the affected task and is surfaced by `fabrikk explain`.
 - **AT-TS-019**: Only the user can create a requirement deferral; automated components cannot manufacture deferrals to bypass closure.
 - **AT-TS-020**: After task compilation, any requirement ID not assigned to at least one task blocks the run from dispatching.
 - **AT-TS-021**: A child repair task carries only the specific uncovered requirement IDs from the triggering finding, not the parent's full requirement set.
 - **AT-TS-022**: When a later task's changes overlap an earlier completed task's `read_only_paths` or `shared_paths`, the earlier task is flagged for re-verification.
 - **AT-TS-023**: Each task attempt records the backend model version string when available from the provider.
-- **AT-TS-024**: The preparation council review runs before user approval and its findings are visible in `attest review`.
+- **AT-TS-024**: The preparation council review runs before user approval and its findings are visible in `fabrikk review`.
 - **AT-TS-025**: A task whose implementation fails the project quality gate (e.g., `just check` returns non-zero) cannot proceed to model review.
-- **AT-TS-026**: `attest prepare` detects a Justfile or Makefile with a `check` target and proposes it as the quality gate in the draft run artifact.
-- **AT-TS-027**: `attest launch` preflight runs the quality gate on the current working tree and blocks launch if it fails.
+- **AT-TS-026**: `fabrikk prepare` detects a Justfile or Makefile with a `check` target and proposes it as the quality gate in the draft run artifact.
+- **AT-TS-027**: `fabrikk launch` preflight runs the quality gate on the current working tree and blocks launch if it fails.
 
 ### Implementation phasing and self-hosting
 
@@ -1433,7 +1433,7 @@ Deliverables:
 - `Justfile` with a `check` target that runs: `go vet`, `golangci-lint`, `gofumpt --extra -l`, `go test ./...`
 - CI-equivalent local toolchain so that `just check` is the single entry point for "my code is clean"
 
-This phase is built manually. No attest engine exists yet. The quality gate is the foundation that every subsequent phase builds on.
+This phase is built manually. No fabrikk engine exists yet. The quality gate is the foundation that every subsequent phase builds on.
 
 Exit criteria:
 
@@ -1446,7 +1446,7 @@ Build the minimum viable verification loop using manual discipline and the quali
 
 Deliverables:
 
-- spec ingester: reads the attest technical spec, extracts requirement IDs
+- spec ingester: reads the fabrikk technical spec, extracts requirement IDs
 - task compiler: deterministic, rule-based, non-LLM
 - file-based state: `tasks.json`, `claims/`, `reports/`, atomic writes
 - single-worker dispatcher: serial execution, Claude Sonnet as implementer
@@ -1460,7 +1460,7 @@ This phase is built manually. Every piece of code must pass `just check`.
 
 Exit criteria:
 
-- the engine can ingest the attest spec, compile tasks, dispatch one task to Sonnet, run the quality gate and verifier, and accept or reject the result
+- the engine can ingest the fabrikk spec, compile tasks, dispatch one task to Sonnet, run the quality gate and verifier, and accept or reject the result
 - AT-TS-001 (deterministic compilation) is testable
 - AT-TS-003 (no evidence, no closure) is testable
 - AT-TS-025 (quality gate blocks model review) is testable
@@ -1469,7 +1469,7 @@ Exit criteria:
 
 Use the Phase 1 engine to build the council pipeline.
 
-The Phase 1 engine runs against the attest spec with tasks scoped to:
+The Phase 1 engine runs against the fabrikk spec with tasks scoped to:
 
 - `internal/councilflow` package
 - Codex review integration
@@ -1516,10 +1516,10 @@ Tasks in this phase:
 
 - engine process detachment from launching terminal
 - engine liveness artifact and heartbeat
-- `attest resume` with stale-engine recovery
-- `attest stop` with graceful shutdown
-- `attest status` with per-task operational detail
-- `attest explain` with blocker diagnostics
+- `fabrikk resume` with stale-engine recovery
+- `fabrikk stop` with graceful shutdown
+- `fabrikk status` with per-task operational detail
+- `fabrikk explain` with blocker diagnostics
 
 Each task runs through the full pipeline: quality gate, verifier, Codex, Gemini, Opus, repair if needed.
 
@@ -1545,14 +1545,14 @@ Each feature is implemented, reviewed, and repaired by the system it extends.
 Exit criteria:
 
 - all acceptance scenarios AT-TS-001 through AT-TS-027 pass
-- the attest spec itself has been used as the input spec for the entire build
+- the fabrikk spec itself has been used as the input spec for the entire build
 - the full v1 feature set is implemented and verified by its own pipeline
 
 ### 18.8 Dogfooding contract
 
 Throughout all phases:
 
-- the attest technical spec is the canonical input spec
+- the fabrikk technical spec is the canonical input spec
 - every implementation task must trace to requirement IDs from this spec
 - `just check` is the quality gate for every task, in every phase
 - no task is accepted without passing the verification gates available in the current phase
