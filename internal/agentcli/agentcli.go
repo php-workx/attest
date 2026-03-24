@@ -66,20 +66,21 @@ func ResolveCommand(name string) string {
 // BackendFor returns the CLI backend for a persona with a given backend name and model preference.
 // If the backend name is unknown, it defaults to Claude.
 func BackendFor(backendName, modelPref string) CLIBackend {
-	resolvedName := backendName
 	base, ok := KnownBackends[backendName]
 	if !ok {
-		resolvedName = BackendClaude
-		base = KnownBackends[BackendClaude]
+		// Unknown backend: fall back to Claude with its default model.
+		// Don't apply modelPref — it was intended for the unknown backend
+		// and may be incompatible with Claude (e.g., "gpt-5.4").
+		return KnownBackends[BackendClaude]
 	}
 	if modelPref == "" {
 		return base
 	}
 
-	// Override the model in the args using the resolved backend name.
+	// Override the model in the args.
 	args := make([]string, len(base.Args))
 	copy(args, base.Args)
-	args = overrideModelArg(resolvedName, args, modelPref)
+	args = overrideModelArg(backendName, args, modelPref)
 	return CLIBackend{Command: base.Command, Args: args, PromptFlag: base.PromptFlag}
 }
 
