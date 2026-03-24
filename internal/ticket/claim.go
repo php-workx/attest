@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/runger/attest/internal/state"
+	"github.com/php-workx/fabrikk/internal/state"
 )
 
 // Compile-time interface assertion.

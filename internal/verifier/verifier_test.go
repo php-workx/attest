@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/runger/attest/internal/state"
-	"github.com/runger/attest/internal/verifier"
+	"github.com/php-workx/fabrikk/internal/state"
+	"github.com/php-workx/fabrikk/internal/verifier"
 )
 
 func TestVerifyPassesWithValidEvidence(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runger/attest/internal/agentcli"
-	"github.com/runger/attest/internal/compiler"
-	"github.com/runger/attest/internal/engine"
-	"github.com/runger/attest/internal/state"
-	"github.com/runger/attest/internal/ticket"
+	"github.com/php-workx/fabrikk/internal/agentcli"
+	"github.com/php-workx/fabrikk/internal/compiler"
+	"github.com/php-workx/fabrikk/internal/engine"
+	"github.com/php-workx/fabrikk/internal/state"
+	"github.com/php-workx/fabrikk/internal/ticket"
 )
 
 func writeTestSpec(t *testing.T, dir string) string {

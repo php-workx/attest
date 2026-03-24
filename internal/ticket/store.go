@@ -10,7 +10,7 @@ import (
 
 	"github.com/gofrs/flock"
 
-	"github.com/runger/attest/internal/state"
+	"github.com/php-workx/fabrikk/internal/state"
 )
 
 // Store implements state.TaskStore using Ticket-format markdown files.
@@ -407,7 +407,7 @@ func atomicWrite(path string, data []byte) error {
 		return err
 	}
 
-	f, err := os.CreateTemp(dir, ".attest-ticket-*")
+	f, err := os.CreateTemp(dir, ".fabrikk-ticket-*")
 	if err != nil {
 		return err
 	}
