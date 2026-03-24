@@ -127,6 +127,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	syscall.Umask(oldMask) // restore original umask
 	if err != nil {
 		d.process.cmd.Process.Kill() //nolint:errcheck // best-effort cleanup
+		_ = d.process.cmd.Wait()     // reap to avoid zombie
 		return fmt.Errorf("listen on socket: %w", err)
 	}
 	d.listener = ln
@@ -507,7 +508,10 @@ func waitForResult(scanner *bufio.Scanner) error {
 			return nil
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("unexpected end of stream before result message")
 }
 
 // query sends a prompt to the Claude process and returns the accumulated response.
