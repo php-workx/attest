@@ -176,7 +176,11 @@ func ExtractFromCodeFence(s string) string {
 }
 
 // ExtractJSONBlock extracts a balanced JSON object or array starting at index idx.
+// Returns "" for invalid indices.
 func ExtractJSONBlock(s string, idx int) string {
+	if idx < 0 || idx >= len(s) {
+		return ""
+	}
 	open := s[idx]
 	closeCh := byte('}')
 	if open == '[' {

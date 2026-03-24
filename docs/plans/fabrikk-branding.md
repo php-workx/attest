@@ -191,7 +191,7 @@ Factory mark on the steel-blue background, with the amber accent on the checkmar
 
 3. **Deterministic compilation.** The spec-to-task-graph step is rule-based, not LLM-generated. You can diff plans, reproduce them, and reason about them. This is rare in the agent space.
 
-4. **Single binary, minimal deps.** In a world of agent frameworks that need Docker, Redis, vector databases, and three API keys — fabrikk is one Go binary with 4 dependencies. Refreshingly simple.
+4. **Single binary, minimal deps.** In a world of agent frameworks that need Docker, Redis, vector databases, and three API keys — fabrikk is one Go binary with minimal dependencies. Refreshingly simple.
 
 5. **Factory metaphor in an artisanal market.** Everyone else is selling "AI pair programmers" and "copilots." fabrikk says: this is a factory. Specs go in, verified software comes out. No magic, no personality, just process. That honesty is the brand.
 
@@ -211,7 +211,7 @@ Factory mark on the steel-blue background, with the amber accent on the checkmar
 >
 > Most agent orchestration tools optimize for "give the AI a prompt and let it go." Fabrikk goes the other direction: you write a structured spec, fabrikk compiles it into a deterministic task graph, agents execute in constrained lanes, and every output is independently verified against requirements before it ships.
 >
-> Single Go binary, 4 dependencies, no LLM in the planning step. The council review uses multiple models with different personas to catch what automated checks miss.
+> Single Go binary, minimal dependencies, no LLM in the planning step. The council review uses multiple models with different personas to catch what automated checks miss.
 >
 > [link] | [example spec → output walkthrough]
 

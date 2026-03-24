@@ -321,9 +321,14 @@ func normalizeWithAgent(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("agent invocation: %w", err)
 	}
 
-	// Strip code fences if the model wrapped the output.
-	if stripped := agentcli.ExtractFromCodeFence(output); stripped != "" {
-		output = stripped
+	// Strip wrapping code fences if the model wrapped the entire output.
+	// Only strip if the fence appears at the start (after optional whitespace),
+	// not if it's an embedded code example within the document.
+	trimmedOutput := strings.TrimSpace(output)
+	if strings.HasPrefix(trimmedOutput, "```") {
+		if stripped := agentcli.ExtractFromCodeFence(trimmedOutput); stripped != "" {
+			output = stripped
+		}
 	}
 	result := []byte(strings.TrimSpace(output))
 
@@ -370,7 +375,7 @@ func countCanonicalHeadings(text string) int {
 		canonicalSet[strings.ToLower(req.canonicalHeading)] = true
 	}
 
-	count := 0
+	seen := make(map[string]bool, len(technicalSpecRequirements))
 	inFence := false
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -381,9 +386,10 @@ func countCanonicalHeadings(text string) int {
 		if inFence {
 			continue
 		}
-		if canonicalSet[strings.ToLower(trimmed)] {
-			count++
+		lower := strings.ToLower(trimmed)
+		if canonicalSet[lower] && !seen[lower] {
+			seen[lower] = true
 		}
 	}
-	return count
+	return len(seen)
 }
