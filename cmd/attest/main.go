@@ -215,45 +215,60 @@ func cmdReview(_ context.Context, args []string) error {
 	return nil
 }
 
-func cmdTechSpec(ctx context.Context, args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> [run-id] [--from <path>] [--council] [--force] [--round N]")
+type techSpecFlags struct {
+	action      string
+	fromPath    string
+	runID       string
+	noNormalize bool
+	remaining   []string
+}
+
+func parseTechSpecFlags(args []string) techSpecFlags {
+	var f techSpecFlags
+	if len(args) > 0 {
+		f.action = args[0]
 	}
-
-	action := args[0]
-
-	// Parse --from from remaining args (needed for both draft and review shortcut).
-	var fromPath, runID string
-	var remaining []string
-	// Flags that consume the next arg as their value.
 	valuedFlags := map[string]bool{"--from": true, "--round": true, "--mode": true}
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--from" {
 			i++
 			if i < len(args) {
-				fromPath = args[i]
+				f.fromPath = args[i]
 			}
 			continue
 		}
+		if arg == "--no-normalize" {
+			f.noNormalize = true
+			continue
+		}
 		if valuedFlags[arg] {
-			remaining = append(remaining, arg)
+			f.remaining = append(f.remaining, arg)
 			i++
 			if i < len(args) {
-				remaining = append(remaining, args[i])
+				f.remaining = append(f.remaining, args[i])
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--") {
-			remaining = append(remaining, arg)
+			f.remaining = append(f.remaining, arg)
 			continue
 		}
-		if runID == "" {
-			runID = arg
+		if f.runID == "" {
+			f.runID = arg
 			continue
 		}
-		remaining = append(remaining, arg)
+		f.remaining = append(f.remaining, arg)
 	}
+	return f
+}
+
+func cmdTechSpec(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> [run-id] [--from <path>] [--no-normalize] [--council] [--force] [--round N]")
+	}
+
+	f := parseTechSpecFlags(args)
 
 	wd, err := workDir()
 	if err != nil {
@@ -261,32 +276,33 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 	}
 
 	// Shortcut: "review --from <path>" without a run-id creates a temporary run.
-	if action == commandReview && runID == "" && fromPath != "" {
-		return cmdTechSpecReviewFromFile(ctx, wd, fromPath, remaining)
+	if f.action == commandReview && f.runID == "" && f.fromPath != "" {
+		return cmdTechSpecReviewFromFile(ctx, wd, f.fromPath, f.noNormalize, f.remaining)
 	}
 
-	if runID == "" {
+	if f.runID == "" {
 		return fmt.Errorf("usage: attest tech-spec <draft|review|approve> <run-id> [--from <path>]")
 	}
 
-	runDir := state.NewRunDir(wd, runID)
+	runDir := state.NewRunDir(wd, f.runID)
 	eng := engine.New(runDir, wd)
 
-	switch action {
+	switch f.action {
 	case "draft":
+		fromPath := f.fromPath
 		if fromPath == "" {
 			fromPath, err = detectTechnicalSpecSource(wd)
 			if err != nil {
 				return err
 			}
 		}
-		if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
+		if err := eng.DraftTechnicalSpec(ctx, fromPath, f.noNormalize); err != nil {
 			return err
 		}
 		fmt.Printf("Technical spec recorded: %s\n", runDir.TechnicalSpec())
 		return nil
 	case commandReview:
-		return cmdTechSpecReview(ctx, eng, remaining, false)
+		return cmdTechSpecReview(ctx, eng, f.remaining, false)
 	case commandApprove:
 		approval, err := eng.ApproveTechnicalSpec(ctx, "user")
 		if err != nil {
@@ -301,9 +317,9 @@ func cmdTechSpec(ctx context.Context, args []string) error {
 
 // cmdTechSpecReviewFromFile creates or reuses a run for reviewing a spec file.
 // If a previous run exists with the same spec hash, it is reused (reviews/personas cached).
-func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags []string) error {
+func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, noNormalize bool, flags []string) error {
 	// Hash the spec to find an existing run.
-	specData, err := os.ReadFile(fromPath) //nolint:gosec // fromPath is user-provided CLI input, path traversal is intentional
+	specData, err := os.ReadFile(fromPath)
 	if err != nil {
 		return fmt.Errorf("read spec: %w", err)
 	}
@@ -314,7 +330,7 @@ func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags [
 		fmt.Printf("Reusing run: %s (spec unchanged)\n", runID)
 		eng := engine.New(runDir, wd)
 		// Re-draft to ensure in-run spec matches source (council may have rewritten it).
-		if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
+		if err := eng.DraftTechnicalSpec(ctx, fromPath, noNormalize); err != nil {
 			return fmt.Errorf("re-draft: %w", err)
 		}
 		return cmdTechSpecReview(ctx, eng, flags, true)
@@ -347,7 +363,7 @@ func cmdTechSpecReviewFromFile(ctx context.Context, wd, fromPath string, flags [
 	eng := engine.New(runDir, wd)
 	fmt.Printf("Run created: %s\n", runID)
 
-	if err := eng.DraftTechnicalSpec(ctx, fromPath); err != nil {
+	if err := eng.DraftTechnicalSpec(ctx, fromPath, noNormalize); err != nil {
 		return fmt.Errorf("draft: %w", err)
 	}
 

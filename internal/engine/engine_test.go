@@ -2,12 +2,14 @@ package engine_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/runger/attest/internal/agentcli"
 	"github.com/runger/attest/internal/compiler"
 	"github.com/runger/attest/internal/engine"
 	"github.com/runger/attest/internal/state"
@@ -413,9 +415,9 @@ Open questions.
 	}
 }
 
-func TestDraftTechnicalSpecNormalizesLegacyHeadings(t *testing.T) {
+func TestDraftTechnicalSpec_NoNormalizePassThrough(t *testing.T) {
 	dir := t.TempDir()
-	runDir := state.NewRunDir(dir, "run-normalize")
+	runDir := state.NewRunDir(dir, "run-no-norm")
 	if err := runDir.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -426,34 +428,21 @@ func TestDraftTechnicalSpecNormalizesLegacyHeadings(t *testing.T) {
 Status: Draft (post-review revision)
 
 ## 1. Implementation decisions
-Context
+Context paragraph with important details.
 
 ## 2. System architecture
-Architecture
+Architecture paragraph with important details.
 
 ## 3. Canonical artifacts
-Artifacts
-
-## 5. CLI surface
-Interfaces
-
-## 11. Council checkpoints and verification pipeline
-Verification
-
-## 17. Acceptance scenarios
-- **AT-TS-001**: Deterministic review.
-
-## 19. Open v1 decisions
-Open questions.
-
-- every implementation task must trace to requirement IDs from this spec
+Artifacts paragraph with important details.
 `
 	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
 		t.Fatalf("WriteFile(source): %v", err)
 	}
 
 	eng := engine.New(runDir, dir)
-	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath); err != nil {
+	// noNormalize=true: agent should not be called, original content preserved.
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, true); err != nil {
 		t.Fatalf("DraftTechnicalSpec: %v", err)
 	}
 
@@ -462,22 +451,373 @@ Open questions.
 		t.Fatalf("ReadTechnicalSpec: %v", err)
 	}
 	got := string(data)
+
+	// Original headings must be preserved verbatim.
 	for _, heading := range []string{
-		"## 1. Technical context",
-		"## 2. Architecture",
-		"## 3. Canonical artifacts and schemas",
-		"## 4. Interfaces",
-		"## 5. Verification",
-		"## 6. Requirement traceability",
-		"## 7. Open questions and risks",
-		"## 8. Approval",
+		"## 1. Implementation decisions",
+		"## 2. System architecture",
+		"## 3. Canonical artifacts",
 	} {
 		if !strings.Contains(got, heading) {
-			t.Fatalf("normalized spec missing heading %q:\n%s", heading, got)
+			t.Fatalf("original heading %q was lost — content must be preserved:\n%s", heading, got)
 		}
 	}
-	if strings.Contains(got, "## 1. Implementation decisions") {
-		t.Fatalf("normalized spec kept legacy heading:\n%s", got)
+	if len(data) < len([]byte(spec))-10 {
+		t.Fatalf("content truncated: output %d bytes, input %d bytes", len(data), len([]byte(spec)))
+	}
+}
+
+func TestDraftTechnicalSpec_AgentFallbackOnError(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-agent-err")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "non-canonical.md")
+	spec := `# My Custom Spec
+
+## Overview
+This is a free-form document with no canonical headings.
+
+## Details
+Lots of important content here that must not be lost.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Stub agent to fail.
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return "", fmt.Errorf("agent unavailable")
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Original content must be preserved when agent fails.
+	if !strings.Contains(string(data), "## Overview") {
+		t.Fatalf("original content lost after agent failure:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "Lots of important content") {
+		t.Fatalf("original content lost after agent failure:\n%s", string(data))
+	}
+}
+
+func TestDraftTechnicalSpec_AgentFallbackOnShortOutput(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-agent-short")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "non-canonical.md")
+	spec := `# My Custom Spec
+
+## Overview
+This is a free-form document with content that spans multiple paragraphs.
+
+## Details
+Lots of important content here that must not be lost. This paragraph
+contains enough text that a 10-byte agent response would clearly be
+too short to preserve the content.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Stub agent to return suspiciously short output.
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return "too short", nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Original content must be preserved when agent output is too short.
+	if !strings.Contains(string(data), "## Overview") {
+		t.Fatalf("original content lost after short agent output:\n%s", string(data))
+	}
+}
+
+func TestDraftTechnicalSpec_AgentFallbackOnGarbledOutput(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-agent-garble")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "non-canonical.md")
+	spec := `# My Custom Spec
+
+## Overview
+This document has no canonical headings at all.
+
+## Implementation Notes
+Some important content that must survive.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Stub agent to return text without canonical headings (long enough to pass length check).
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return "# Garbled Output\n\nThis text has no canonical headings.\n\nIt is long enough to pass the length check but has zero canonical section headings.\n\nMore padding text to exceed 50% of input length.", nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Original content must be preserved when agent output is garbled.
+	if !strings.Contains(string(data), "## Overview") {
+		t.Fatalf("original content lost after garbled agent output:\n%s", string(data))
+	}
+}
+
+func TestDraftTechnicalSpec_AgentSuccess(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-agent-ok")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "non-canonical.md")
+	spec := `# My Custom Spec
+
+## Overview
+Some content.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Stub agent to return well-formed normalized output with canonical headings.
+	normalized := `# Technical Specification
+
+## 1. Technical context
+
+Some content.
+
+## 2. Architecture
+
+Derived from overview.
+
+## 3. Canonical artifacts and schemas
+
+No artifacts specified.
+
+## 4. Interfaces
+
+No interfaces specified.
+
+## 5. Verification
+
+No verification specified.
+
+## 7. Open questions and risks
+
+None identified.
+`
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return normalized, nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	got := string(data)
+	// Agent's normalized output should be used.
+	if !strings.Contains(got, "## 1. Technical context") {
+		t.Fatalf("expected canonical heading in output:\n%s", got)
+	}
+	if !strings.Contains(got, "Some content.") {
+		t.Fatalf("expected original content preserved in normalized output:\n%s", got)
+	}
+}
+
+func TestDraftTechnicalSpec_AgentSectionLossAccepted(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-section-loss")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "many-sections.md")
+	// Input has 10 sections.
+	spec := `# Big Spec
+## Section A
+Content A.
+## Section B
+Content B.
+## Section C
+Content C.
+## Section D
+Content D.
+## Section E
+Content E.
+## Section F
+Content F.
+## Section G
+Content G.
+## Section H
+Content H.
+## Section I
+Content I.
+## Section J
+Content J.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Agent consolidates 10 input sections into 8 canonical ones (losing 5 sections).
+	// This should produce a warning but NOT reject the output.
+	normalized := `# Technical Specification
+
+## 1. Technical context
+Content A. Content B.
+
+## 2. Architecture
+Content C.
+
+## 3. Canonical artifacts and schemas
+Content D.
+
+## 4. Interfaces
+Content E.
+
+## 5. Verification
+Content F. Content G.
+
+## 6. Requirement traceability
+Content H.
+
+## 7. Open questions and risks
+Content I.
+
+## 8. Approval
+Content J.
+`
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return normalized, nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	// Should succeed despite section count drop (10 → 8). Warning printed but not a rejection.
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Normalized output should be used (not the original).
+	if !strings.Contains(string(data), "## 1. Technical context") {
+		t.Fatalf("expected canonical heading in output:\n%s", string(data))
+	}
+}
+
+func TestDraftTechnicalSpec_NormalConsolidationNoWarning(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-no-warn")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "few-sections.md")
+	// Input has 4 sections — consolidating to 8 canonical ADDS sections.
+	spec := `# Small Spec
+## Overview
+Content.
+## Design
+Design content.
+## Tests
+Test content.
+## Risks
+Risk content.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	normalized := `# Technical Specification
+
+## 1. Technical context
+Content.
+
+## 2. Architecture
+Design content.
+
+## 3. Canonical artifacts and schemas
+No artifacts.
+
+## 4. Interfaces
+No interfaces.
+
+## 5. Verification
+Test content.
+
+## 6. Requirement traceability
+No traceability.
+
+## 7. Open questions and risks
+Risk content.
+
+## 8. Approval
+Status: Draft
+`
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return normalized, nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	if !strings.Contains(string(data), "## 1. Technical context") {
+		t.Fatalf("expected normalized output:\n%s", string(data))
 	}
 }
 
@@ -1564,5 +1904,219 @@ func TestCompileWithoutLearningEnricher(t *testing.T) {
 		if len(result.Tasks[i].LearningIDs) != 0 {
 			t.Errorf("task %s: expected no LearningIDs without enricher", result.Tasks[i].TaskID)
 		}
+	}
+}
+
+func TestReviewExecutionPlanRejectsUncoveredRequirement(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-uncovered")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	// Artifact has 3 requirements; plan only covers 2.
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-uncovered",
+		Requirements: []state.Requirement{
+			{ID: "AT-FR-001", Text: "Requirement 1"},
+			{ID: "AT-FR-002", Text: "Requirement 2"},
+			{ID: "AT-FR-003", Text: "Requirement 3"},
+		},
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-uncovered",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-002", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewFail {
+		t.Fatal("review should fail when a requirement is uncovered")
+	}
+	found := false
+	for _, f := range review.BlockingFindings {
+		if f.Category == "uncovered_requirement" {
+			found = true
+			if len(f.RequirementIDs) != 1 || f.RequirementIDs[0] != "AT-FR-003" {
+				t.Errorf("expected AT-FR-003 in finding, got: %v", f.RequirementIDs)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected uncovered_requirement finding, got: %+v", review.BlockingFindings)
+	}
+}
+
+func TestReviewExecutionPlanWarnsOnDuplicateCoverage(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-dup-cov")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-dup-cov",
+		Requirements: []state.Requirement{
+			{ID: "AT-FR-001", Text: "Requirement 1"},
+		},
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	// Two slices cover the same requirement.
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-dup-cov",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-002", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	// Should pass (duplicate coverage is a warning, not a blocker).
+	if review.Status != state.ReviewPass {
+		t.Fatalf("review should pass with duplicate coverage (warning only), got: %s", review.Status)
+	}
+	found := false
+	for _, w := range review.Warnings {
+		if strings.Contains(w.Summary, "AT-FR-001") && strings.Contains(w.Summary, "2 slices") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected duplicate coverage warning for AT-FR-001, got warnings: %+v", review.Warnings)
+	}
+}
+
+func TestReviewExecutionPlanPassesWithFullCoverage(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-full-cov")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := runDir.WriteArtifact(&state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-full-cov",
+		Requirements: []state.Requirement{
+			{ID: "AT-FR-001", Text: "Requirement 1"},
+			{ID: "AT-FR-002", Text: "Requirement 2"},
+		},
+	}); err != nil {
+		t.Fatalf("WriteArtifact: %v", err)
+	}
+	if err := runDir.WriteExecutionPlan(&state.ExecutionPlan{
+		SchemaVersion:           "0.1",
+		RunID:                   "run-full-cov",
+		ArtifactType:            "execution_plan",
+		SourceTechnicalSpecHash: "sha256:test",
+		Status:                  state.ArtifactDrafted,
+		Slices: []state.ExecutionSlice{
+			{SliceID: "slice-001", Title: "A", Goal: "G", RequirementIDs: []string{"AT-FR-001"}, OwnedPaths: []string{"a"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+			{SliceID: "slice-002", Title: "B", Goal: "G", RequirementIDs: []string{"AT-FR-002"}, OwnedPaths: []string{"b"}, AcceptanceChecks: []string{"check"}, Risk: "low", Size: "small"},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteExecutionPlan: %v", err)
+	}
+
+	eng := engine.New(runDir, dir)
+	review, err := eng.ReviewExecutionPlan(context.Background())
+	if err != nil {
+		t.Fatalf("ReviewExecutionPlan: %v", err)
+	}
+	if review.Status != state.ReviewPass {
+		t.Fatalf("review should pass with full coverage, got: %s (findings: %+v)", review.Status, review.BlockingFindings)
+	}
+}
+
+func TestDraftTechnicalSpec_CanonicalPassThrough(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-canonical")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "canonical-spec.md")
+	spec := `# Technical Specification
+
+## 1. Technical context
+Context content.
+
+## 2. Architecture
+Architecture content.
+
+## 3. Canonical artifacts and schemas
+Artifacts content.
+
+## 4. Interfaces
+Interfaces content.
+
+## 5. Verification
+Verification content.
+
+## 6. Requirement traceability
+Traceability content.
+
+## 7. Open questions and risks
+Risks content.
+
+## 8. Approval
+Status: Draft
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Track whether InvokeFunc is called — it should NOT be for canonical docs.
+	invokeCalled := false
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		invokeCalled = true
+		return "", fmt.Errorf("should not be called")
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	if invokeCalled {
+		t.Fatal("agent InvokeFunc was called for canonical doc — should have been skipped")
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	if string(data) != spec {
+		t.Fatalf("canonical doc was modified:\n  got:  %d bytes\n  want: %d bytes", len(data), len(spec))
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runger/attest/internal/agentcli"
 	"github.com/runger/attest/internal/councilflow"
 	"github.com/runger/attest/internal/state"
 )
@@ -93,14 +94,21 @@ var technicalSpecRequirements = []technicalSpecRequirement{
 }
 
 // DraftTechnicalSpec records a run-scoped technical spec markdown artifact.
-func (e *Engine) DraftTechnicalSpec(ctx context.Context, sourcePath string) error {
-	_ = ctx
-
+// If noNormalize is false, attempts agent-based normalization for non-canonical docs.
+func (e *Engine) DraftTechnicalSpec(ctx context.Context, sourcePath string, noNormalize bool) error {
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return fmt.Errorf("read technical spec source: %w", err)
 	}
-	data = normalizeTechnicalSpec(data)
+	if !noNormalize && !hasCanonicalTechnicalSpecHeadings(strings.ToLower(string(data))) {
+		fmt.Println("Document doesn't match canonical headings — attempting agent normalization ...")
+		if normalized, normErr := normalizeWithAgent(ctx, data); normErr == nil {
+			data = normalized
+			fmt.Println("Agent normalization applied successfully.")
+		} else {
+			fmt.Printf("Agent normalization unavailable (%v) — using original document\n", normErr)
+		}
+	}
 	if err := e.RunDir.WriteTechnicalSpec(data); err != nil {
 		return fmt.Errorf("write technical spec: %w", err)
 	}
@@ -266,45 +274,6 @@ func containsAny(haystack string, needles []string) bool {
 	return false
 }
 
-type markdownSection struct {
-	heading string
-	body    string
-}
-
-func normalizeTechnicalSpec(data []byte) []byte {
-	text := string(data)
-	lower := strings.ToLower(text)
-	if hasCanonicalTechnicalSpecHeadings(lower) || !hasLegacyTechnicalSpecHeadings(lower) {
-		return data
-	}
-
-	title, preamble, sections := parseTechnicalSpecMarkdown(text)
-	var builder strings.Builder
-
-	if title == "" {
-		title = "# Technical Specification"
-	}
-	builder.WriteString(title)
-	builder.WriteString("\n\n")
-	if preamble != "" {
-		builder.WriteString(strings.TrimSpace(preamble))
-		builder.WriteString("\n\n")
-	}
-
-	for _, requirement := range technicalSpecRequirements {
-		content := normalizedSectionContent(requirement, text, sections)
-		if content == "" {
-			continue
-		}
-		builder.WriteString(requirement.canonicalHeading)
-		builder.WriteString("\n\n")
-		builder.WriteString(content)
-		builder.WriteString("\n\n")
-	}
-
-	return []byte(strings.TrimSpace(builder.String()) + "\n")
-}
-
 func hasCanonicalTechnicalSpecHeadings(text string) bool {
 	for _, requirement := range technicalSpecRequirements {
 		if !strings.Contains(text, strings.ToLower(requirement.canonicalHeading)) {
@@ -314,107 +283,113 @@ func hasCanonicalTechnicalSpecHeadings(text string) bool {
 	return true
 }
 
-func hasLegacyTechnicalSpecHeadings(text string) bool {
-	for _, requirement := range technicalSpecRequirements {
-		for _, alias := range requirement.aliases[1:] {
-			if strings.Contains(text, alias) {
-				return true
-			}
+const technicalSpecNormalizationPrompt = `You are a technical document reformatter. Your job is to reorganize an existing document into a canonical 8-section template.
+
+## Canonical Sections
+
+## 1. Technical context — Language, runtime, dependencies, constraints
+## 2. Architecture — Components, data flow, concurrency model
+## 3. Canonical artifacts and schemas — File paths, producers, consumers, schemas
+## 4. Interfaces — CLI/API surface, state machines, transitions
+## 5. Verification — Quality gates, acceptance scenarios, evidence requirements
+## 6. Requirement traceability — Requirement IDs mapped to technical mechanisms
+## 7. Open questions and risks — Unresolved decisions and their impact
+## 8. Approval — Draft/review/approval status
+
+## Rules
+
+1. Preserve ALL content from the source document. Do not summarize, abbreviate, or omit any information.
+2. Map source content to the closest matching canonical section. If content does not clearly fit any section, place it under "## Additional Content" at the end rather than dropping it.
+3. Do not invent content that is not in the source document.
+4. Preserve code blocks, tables, lists, and formatting from the source.
+5. If the source has sections beyond the 8 canonical ones, include them after the canonical sections.
+
+## Output
+
+Return ONLY the reformatted markdown document. No explanation, no commentary, no wrapping code fences.
+`
+
+// normalizeWithAgent uses an LLM to reformat a document into the canonical
+// 8-section technical spec template. Returns an error if the agent is
+// unavailable, times out, or produces suspicious output.
+func normalizeWithAgent(ctx context.Context, data []byte) ([]byte, error) {
+	prompt := technicalSpecNormalizationPrompt + "\n## Source Document\n\n" + string(data)
+
+	backend := agentcli.KnownBackends[agentcli.BackendClaude]
+	output, err := agentcli.InvokeFunc(ctx, &backend, prompt, 120)
+	if err != nil {
+		return nil, fmt.Errorf("agent invocation: %w", err)
+	}
+
+	// Strip wrapping code fences if the model wrapped the entire output.
+	// Only strip if the fence appears at the start (after optional whitespace),
+	// not if it's an embedded code example within the document.
+	trimmedOutput := strings.TrimSpace(output)
+	if strings.HasPrefix(trimmedOutput, "```") {
+		if stripped := agentcli.ExtractFromCodeFence(trimmedOutput); stripped != "" {
+			output = stripped
 		}
 	}
-	return false
+	result := []byte(strings.TrimSpace(output))
+
+	// Output validation: reject suspiciously short output.
+	if len(result) < len(data)/2 {
+		return nil, fmt.Errorf("output too short (%d bytes vs %d input bytes)", len(result), len(data))
+	}
+
+	// Output validation: require at least 4 canonical headings as actual section lines
+	// (not substring matches, which could match the echoed prompt text inside the output).
+	headingCount := countCanonicalHeadings(string(result))
+	if headingCount < 4 {
+		return nil, fmt.Errorf("output has only %d of 8 canonical headings (need at least 4)", headingCount)
+	}
+
+	// Output validation: warn if sections were lost (not a rejection — consolidation is expected).
+	inputSections := countMarkdownSections(string(data))
+	outputSections := countMarkdownSections(string(result))
+	if inputSections > outputSections+2 {
+		fmt.Printf("Warning: agent output has %d sections vs %d in input (-%d); verify no content was dropped\n",
+			outputSections, inputSections, inputSections-outputSections)
+	}
+
+	return result, nil
 }
 
-func parseTechnicalSpecMarkdown(text string) (title, preamble string, sections []markdownSection) {
-	lines := strings.Split(text, "\n")
-	var (
-		currentHeading string
-		currentBody    []string
-		preambleLines  []string
-	)
-
-	flush := func() {
-		if currentHeading == "" {
-			return
-		}
-		sections = append(sections, markdownSection{
-			heading: currentHeading,
-			body:    strings.TrimSpace(strings.Join(currentBody, "\n")),
-		})
-		currentBody = nil
-	}
-
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "# ") && title == "":
-			title = line
-		case strings.HasPrefix(line, "## "):
-			flush()
-			currentHeading = strings.TrimSpace(strings.TrimPrefix(line, "## "))
-		case currentHeading == "":
-			preambleLines = append(preambleLines, line)
-		default:
-			currentBody = append(currentBody, line)
+// countMarkdownSections counts lines starting with "## " in a markdown document.
+func countMarkdownSections(text string) int {
+	count := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+			count++
 		}
 	}
-	flush()
-
-	return title, strings.TrimSpace(strings.Join(preambleLines, "\n")), sections
+	return count
 }
 
-func normalizedSectionContent(requirement technicalSpecRequirement, fullText string, sections []markdownSection) string {
-	var matched []markdownSection
-	for _, section := range sections {
-		heading := "## " + strings.ToLower(section.heading)
-		for _, alias := range requirement.aliases {
-			if heading == alias {
-				matched = append(matched, section)
-				break
-			}
-		}
+// countCanonicalHeadings counts how many of the 8 canonical headings appear
+// as actual section lines in the document (not as substring matches inside
+// code blocks or echoed prompt text).
+func countCanonicalHeadings(text string) int {
+	canonicalSet := make(map[string]bool, len(technicalSpecRequirements))
+	for _, req := range technicalSpecRequirements {
+		canonicalSet[strings.ToLower(req.canonicalHeading)] = true
 	}
 
-	if len(matched) > 0 {
-		var builder strings.Builder
-		for idx, section := range matched {
-			if idx > 0 {
-				builder.WriteString("\n\n")
-			}
-			if "## "+strings.ToLower(section.heading) != strings.ToLower(requirement.canonicalHeading) {
-				builder.WriteString("### ")
-				builder.WriteString(stripSectionNumber(section.heading))
-				builder.WriteString("\n\n")
-			}
-			builder.WriteString(strings.TrimSpace(section.body))
-		}
-		return strings.TrimSpace(builder.String())
-	}
-
-	if evidence := matchingLine(fullText, requirement.aliases); evidence != "" {
-		return "- Source evidence: " + evidence
-	}
-
-	return ""
-}
-
-func stripSectionNumber(heading string) string {
-	parts := strings.SplitN(heading, ". ", 2)
-	if len(parts) == 2 {
-		return parts[1]
-	}
-	return heading
-}
-
-func matchingLine(text string, aliases []string) string {
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
+	seen := make(map[string]bool, len(technicalSpecRequirements))
+	inFence := false
+	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
 		lower := strings.ToLower(trimmed)
-		for _, alias := range aliases {
-			if strings.Contains(lower, alias) {
-				return trimmed
-			}
+		if canonicalSet[lower] && !seen[lower] {
+			seen[lower] = true
 		}
 	}
-	return ""
+	return len(seen)
 }

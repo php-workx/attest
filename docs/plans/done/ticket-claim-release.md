@@ -223,15 +223,39 @@ ClaimHeartbeat string `yaml:"claim_heartbeat,omitempty"` // RFC3339 UTC
 
 Added to `Frontmatter` struct after the existing attest-specific fields (after `UpdatedAt`).
 
-**UpdateFrontmatter preservation** — add to the preservation block alongside Links/Assignee/ExternalRef/Extra:
+**UpdateFrontmatter preservation** — claim fields are preserved conditionally based on task status via `isActiveStatus`:
+
 ```go
-fm.ClaimedBy = existingFM.ClaimedBy
-fm.ClaimBackend = existingFM.ClaimBackend
-fm.ClaimExpires = existingFM.ClaimExpires
-fm.ClaimHeartbeat = existingFM.ClaimHeartbeat
+// isActiveStatus returns true for statuses where a claim should be preserved.
+// Pending, done, failed, and blocked are terminal/reset states where claims should clear.
+func isActiveStatus(s state.TaskStatus) bool {
+    switch s {
+    case state.TaskClaimed, state.TaskImplementing, state.TaskVerifying, state.TaskUnderReview:
+        return true
+    default:
+        return false
+    }
+}
 ```
 
-This ensures engine operations like `UpdateStatus`, `WriteTask`, and `WriteTasks` do not accidentally clear active claims.
+In `UpdateFrontmatter`:
+```go
+if existingFM.ClaimedBy != "" && isActiveStatus(task.Status) {
+    fm.ClaimedBy = existingFM.ClaimedBy
+    fm.ClaimBackend = existingFM.ClaimBackend
+    fm.ClaimExpires = existingFM.ClaimExpires
+    fm.ClaimHeartbeat = existingFM.ClaimHeartbeat
+}
+```
+
+This ensures:
+- Active claims survive `UpdateStatus` and `WriteTask` calls (e.g., transitioning from `TaskClaimed` to `TaskImplementing`).
+- Stale claims are cleared when `WriteTasks` re-compiles tasks back to `TaskPending`, or when a task reaches terminal states (`TaskDone`, `TaskFailed`, `TaskBlocked`).
+
+**Compile-time interface assertion** — `claim.go` includes a compile-time check to ensure `Store` satisfies `ClaimableStore`:
+```go
+var _ state.ClaimableStore = (*Store)(nil)
+```
 
 ### 5.2 New sentinel errors (`internal/ticket/errors.go`)
 
@@ -379,9 +403,11 @@ func (s *Store) ReclaimExpired(runID string) ([]string, error)
    a. `withLock` on the ticket file.
    b. Re-read frontmatter (may have been renewed since `ReadClaimsForRun`).
    c. Re-check expiry inside lock (double-check pattern — avoids TOCTOU).
-   d. If still expired: clear claim fields, set status to `TaskPending`, set reason to `"claim expired"`.
-   e. atomicWrite.
-4. Return list of reclaimed task IDs.
+   d. If no longer expired (renewed between scan and lock), return internal `errNotExpired` sentinel — this is not counted as a reclamation and not surfaced to callers.
+   e. If still expired: clear claim fields, set status to `TaskPending`, set reason to `"claim expired"`.
+   f. atomicWrite.
+4. Errors from individual reclamation attempts (including `errNotExpired` and `os.IsNotExist`) are silently skipped — the sweep continues with remaining claims. Real errors (disk full, corrupt YAML) are also skipped to maximize reclamation coverage.
+5. Return list of reclaimed task IDs.
 
 ### 5.4 ReadyFilter refactor (`internal/ticket/deps.go`)
 

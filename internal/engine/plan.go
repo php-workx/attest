@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -113,6 +114,13 @@ func (e *Engine) ReviewExecutionPlan(ctx context.Context) (*state.ExecutionPlanR
 	for i := range plan.Slices {
 		reviewSlice(&plan.Slices[i], review)
 	}
+
+	// Cross-slice requirement coverage: check all artifact requirements are covered.
+	artifact, artifactErr := e.RunDir.ReadArtifact()
+	if artifactErr == nil {
+		validateRequirementCoverage(artifact, plan.Slices, review)
+	}
+
 	review.Reviewers = []state.ReviewSummary{{
 		ReviewerID: "deterministic",
 		Pass:       review.Status != state.ReviewFail,
@@ -389,6 +397,63 @@ func reviewSlice(slice *state.ExecutionSlice, review *state.ExecutionPlanReview)
 			SliceID:   slice.SliceID,
 			Summary:   "slice is missing likely file touch points",
 		})
+	}
+}
+
+// validateRequirementCoverage checks that every requirement in the run artifact
+// is covered by at least one execution slice. Dropped requirements are blocking
+// findings; requirements covered by multiple slices produce a warning.
+func validateRequirementCoverage(artifact *state.RunArtifact, slices []state.ExecutionSlice, review *state.ExecutionPlanReview) {
+	if len(artifact.Requirements) == 0 {
+		return
+	}
+
+	// Build coverage map: requirement ID → unique covering slice IDs.
+	covered := make(map[string]map[string]struct{}, len(slices))
+	for i := range slices {
+		for _, reqID := range slices[i].RequirementIDs {
+			if covered[reqID] == nil {
+				covered[reqID] = make(map[string]struct{})
+			}
+			covered[reqID][slices[i].SliceID] = struct{}{}
+		}
+	}
+
+	// Check for dropped requirements.
+	for i := range artifact.Requirements {
+		reqID := artifact.Requirements[i].ID
+		if len(covered[reqID]) == 0 {
+			review.Status = state.ReviewFail
+			review.BlockingFindings = append(review.BlockingFindings, state.ReviewFinding{
+				FindingID:       fmt.Sprintf("epr-cov-%03d", len(review.BlockingFindings)+1),
+				Severity:        "high",
+				Category:        "uncovered_requirement",
+				Summary:         fmt.Sprintf("requirement %s is not covered by any execution slice", reqID),
+				RequirementIDs:  []string{reqID},
+				SuggestedRepair: "Add the requirement to an existing slice or create a new slice for it.",
+			})
+		}
+	}
+
+	// Warn on requirements covered by multiple slices (deterministic order).
+	reqIDs := make([]string, 0, len(covered))
+	for reqID := range covered {
+		reqIDs = append(reqIDs, reqID)
+	}
+	sort.Strings(reqIDs)
+	for _, reqID := range reqIDs {
+		sliceSet := covered[reqID]
+		if len(sliceSet) > 1 {
+			sliceIDs := make([]string, 0, len(sliceSet))
+			for sid := range sliceSet {
+				sliceIDs = append(sliceIDs, sid)
+			}
+			sort.Strings(sliceIDs)
+			review.Warnings = append(review.Warnings, state.ReviewWarning{
+				WarningID: fmt.Sprintf("epr-w-%03d", len(review.Warnings)+1),
+				Summary:   fmt.Sprintf("requirement %s is covered by %d slices (%s); verify this is intentional", reqID, len(sliceIDs), strings.Join(sliceIDs, ", ")),
+			})
+		}
 	}
 }
 
