@@ -317,39 +317,15 @@ func detectSliceCycles(slices []state.ExecutionSlice, adj map[string][]string, r
 // findCycleInGraph uses DFS three-color marking to find a cycle in the slice dependency graph.
 // Returns the node involved in the cycle and true if found, or ("", false) if acyclic.
 func findCycleInGraph(slices []state.ExecutionSlice, adj map[string][]string) (string, bool) {
-	const (
-		colorWhite = 0 // unvisited
-		colorGray  = 1 // in current path
-		colorBlack = 2 // fully explored
-	)
-	color := make(map[string]int, len(slices))
-	var cycleNode string
-
-	var dfs func(node string) bool
-	dfs = func(node string) bool {
-		color[node] = colorGray
-		for _, dep := range adj[node] {
-			switch color[dep] {
-			case colorGray:
-				cycleNode = dep
-				return true
-			case colorWhite:
-				if dfs(dep) {
-					return true
-				}
-			default:
-				// colorBlack — already fully explored, skip.
-			}
-		}
-		color[node] = colorBlack
-		return false
+	cs := &cycleSearcher{
+		color: make(map[string]int, len(slices)),
+		adj:   adj,
 	}
-
 	for i := range slices {
 		id := slices[i].SliceID
-		if id != "" && color[id] == colorWhite {
-			if dfs(id) {
-				return cycleNode, true
+		if id != "" && cs.color[id] == colorWhite {
+			if cs.dfs(id) {
+				return cs.cycleNode, true
 			}
 		}
 	}
@@ -360,6 +336,39 @@ var (
 	validRisks = map[string]bool{"low": true, "medium": true, "high": true}
 	validSizes = map[string]bool{"small": true, "medium": true, "large": true}
 )
+
+// DFS three-color constants for cycle detection.
+const (
+	colorWhite = 0 // unvisited
+	colorGray  = 1 // in current path
+	colorBlack = 2 // fully explored
+)
+
+// cycleSearcher holds state for DFS-based cycle detection.
+type cycleSearcher struct {
+	color     map[string]int
+	adj       map[string][]string
+	cycleNode string
+}
+
+func (cs *cycleSearcher) dfs(node string) bool {
+	cs.color[node] = colorGray
+	for _, dep := range cs.adj[node] {
+		switch cs.color[dep] {
+		case colorGray:
+			cs.cycleNode = dep
+			return true
+		case colorWhite:
+			if cs.dfs(dep) {
+				return true
+			}
+		default:
+			// colorBlack — already fully explored, skip.
+		}
+	}
+	cs.color[node] = colorBlack
+	return false
+}
 
 func isValidRisk(v string) bool { return validRisks[v] }
 func isValidSize(v string) bool { return validSizes[v] }

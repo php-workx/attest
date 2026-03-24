@@ -555,7 +555,7 @@ func printCouncilVerdict(result *councilflow.CouncilResult) {
 // startJudgeDaemon starts a persistent Claude daemon for judge context accumulation.
 // Returns the daemon's InvokeFn (nil if daemon failed to start) and a cleanup function.
 func startJudgeDaemon(ctx context.Context, eng *engine.Engine) (invokeFn agentcli.InvokeFn, cleanup func()) {
-	noop := func() {}
+	noop := func() { /* no daemon to stop */ }
 	runID := filepath.Base(eng.RunDir.Root)
 	if runID == "" {
 		return nil, noop
