@@ -42,21 +42,67 @@ func TestExtractFromCodeFence_Variants(t *testing.T) {
 	}
 }
 
-func TestStdinThreshold(t *testing.T) {
-	// The stdin fallback threshold is 32000 bytes (agentcli.go:127).
-	// Prompts at or below this length are passed as CLI args.
-	// Prompts above this length are piped via stdin.
-	// We verify the threshold constant by constructing a prompt at the boundary.
-	shortPrompt := strings.Repeat("x", 32000)
-	longPrompt := strings.Repeat("x", 32001)
-
-	// We can't easily test the actual exec behavior without running a real process,
-	// but we verify the threshold is consistent with what Invoke uses internally.
-	// The threshold should be 32000 (not 32768 or any other value).
-	if len(shortPrompt) > 32000 {
-		t.Error("short prompt exceeds threshold — test is misconfigured")
+func TestBuildInvokeArgs_ShortPrompt(t *testing.T) {
+	backend := &CLIBackend{Command: "claude", Args: []string{"-p"}}
+	args, useStdin := BuildInvokeArgs(backend, "hello world")
+	if useStdin {
+		t.Error("short prompt should not use stdin")
 	}
-	if len(longPrompt) <= 32000 {
-		t.Error("long prompt does not exceed threshold — test is misconfigured")
+	// Prompt should appear as last arg.
+	if len(args) < 2 || args[len(args)-1] != "hello world" {
+		t.Errorf("args = %v, want prompt as last element", args)
+	}
+}
+
+func TestBuildInvokeArgs_ShortPromptWithFlag(t *testing.T) {
+	backend := &CLIBackend{Command: "gemini", Args: []string{"-m", "model"}, PromptFlag: "-p"}
+	args, useStdin := BuildInvokeArgs(backend, "hello")
+	if useStdin {
+		t.Error("short prompt should not use stdin")
+	}
+	// Should contain -p followed by prompt.
+	found := false
+	for i, arg := range args {
+		if arg == "-p" && i+1 < len(args) && args[i+1] == "hello" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("args = %v, want -p hello", args)
+	}
+}
+
+func TestBuildInvokeArgs_LongPromptUsesStdin(t *testing.T) {
+	backend := &CLIBackend{Command: "claude", Args: []string{"-p"}}
+	longPrompt := strings.Repeat("x", StdinThreshold+1)
+	args, useStdin := BuildInvokeArgs(backend, longPrompt)
+	if !useStdin {
+		t.Error("prompt exceeding threshold should use stdin")
+	}
+	// Prompt must NOT appear in args.
+	for _, arg := range args {
+		if arg == longPrompt {
+			t.Error("long prompt should not be in args — it should be piped via stdin")
+		}
+	}
+}
+
+func TestBuildInvokeArgs_BoundaryExact(t *testing.T) {
+	backend := &CLIBackend{Command: "claude", Args: []string{"-p"}}
+	// Exactly at threshold: should NOT use stdin (threshold is >, not >=).
+	prompt := strings.Repeat("x", StdinThreshold)
+	_, useStdin := BuildInvokeArgs(backend, prompt)
+	if useStdin {
+		t.Errorf("prompt at exact threshold (%d bytes) should not use stdin", StdinThreshold)
+	}
+}
+
+func TestBuildInvokeArgs_BoundaryPlusOne(t *testing.T) {
+	backend := &CLIBackend{Command: "claude", Args: []string{"-p"}}
+	prompt := strings.Repeat("x", StdinThreshold+1)
+	_, useStdin := BuildInvokeArgs(backend, prompt)
+	if !useStdin {
+		t.Errorf("prompt at threshold+1 (%d bytes) should use stdin", StdinThreshold+1)
 	}
 }

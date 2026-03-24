@@ -667,6 +667,160 @@ None identified.
 	}
 }
 
+func TestDraftTechnicalSpec_AgentSectionLossAccepted(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-section-loss")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "many-sections.md")
+	// Input has 10 sections.
+	spec := `# Big Spec
+## Section A
+Content A.
+## Section B
+Content B.
+## Section C
+Content C.
+## Section D
+Content D.
+## Section E
+Content E.
+## Section F
+Content F.
+## Section G
+Content G.
+## Section H
+Content H.
+## Section I
+Content I.
+## Section J
+Content J.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Agent consolidates 10 input sections into 8 canonical ones (losing 5 sections).
+	// This should produce a warning but NOT reject the output.
+	normalized := `# Technical Specification
+
+## 1. Technical context
+Content A. Content B.
+
+## 2. Architecture
+Content C.
+
+## 3. Canonical artifacts and schemas
+Content D.
+
+## 4. Interfaces
+Content E.
+
+## 5. Verification
+Content F. Content G.
+
+## 6. Requirement traceability
+Content H.
+
+## 7. Open questions and risks
+Content I.
+
+## 8. Approval
+Content J.
+`
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return normalized, nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	// Should succeed despite section count drop (10 → 8). Warning printed but not a rejection.
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	// Normalized output should be used (not the original).
+	if !strings.Contains(string(data), "## 1. Technical context") {
+		t.Fatalf("expected canonical heading in output:\n%s", string(data))
+	}
+}
+
+func TestDraftTechnicalSpec_NormalConsolidationNoWarning(t *testing.T) {
+	dir := t.TempDir()
+	runDir := state.NewRunDir(dir, "run-no-warn")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "few-sections.md")
+	// Input has 4 sections — consolidating to 8 canonical ADDS sections.
+	spec := `# Small Spec
+## Overview
+Content.
+## Design
+Design content.
+## Tests
+Test content.
+## Risks
+Risk content.
+`
+	if err := os.WriteFile(sourcePath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	normalized := `# Technical Specification
+
+## 1. Technical context
+Content.
+
+## 2. Architecture
+Design content.
+
+## 3. Canonical artifacts and schemas
+No artifacts.
+
+## 4. Interfaces
+No interfaces.
+
+## 5. Verification
+Test content.
+
+## 6. Requirement traceability
+No traceability.
+
+## 7. Open questions and risks
+Risk content.
+
+## 8. Approval
+Status: Draft
+`
+	original := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(_ context.Context, _ *agentcli.CLIBackend, _ string, _ int) (string, error) {
+		return normalized, nil
+	}
+	t.Cleanup(func() { agentcli.InvokeFunc = original })
+
+	eng := engine.New(runDir, dir)
+	if err := eng.DraftTechnicalSpec(context.Background(), sourcePath, false); err != nil {
+		t.Fatalf("DraftTechnicalSpec: %v", err)
+	}
+
+	data, err := runDir.ReadTechnicalSpec()
+	if err != nil {
+		t.Fatalf("ReadTechnicalSpec: %v", err)
+	}
+	if !strings.Contains(string(data), "## 1. Technical context") {
+		t.Fatalf("expected normalized output:\n%s", string(data))
+	}
+}
+
 func TestApproveTechnicalSpecRejectsArtifactChangedAfterReview(t *testing.T) {
 	dir := t.TempDir()
 	runDir := state.NewRunDir(dir, "run-tech-approve")

@@ -113,19 +113,15 @@ type InvokeFn func(ctx context.Context, backend *CLIBackend, prompt string, time
 // Replace in tests with a stub to avoid real CLI calls.
 var InvokeFunc InvokeFn = Invoke
 
-// Invoke executes a CLI backend with the given prompt and timeout.
-func Invoke(ctx context.Context, backend *CLIBackend, prompt string, timeoutSec int) (string, error) {
-	timeout := time.Duration(timeoutSec) * time.Second
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+// StdinThreshold is the prompt size (bytes) above which the prompt is piped
+// via stdin instead of passed as a CLI argument. This avoids OS arg size limits.
+const StdinThreshold = 32000
 
-	args := append([]string(nil), backend.Args...)
-
-	// For large prompts, pipe via stdin to avoid OS arg size limits.
-	// Claude and Gemini read from stdin when prompt is "-" or piped.
-	// Codex reads from stdin when no positional prompt is given.
-	useStdin := len(prompt) > 32000
-
+// BuildInvokeArgs constructs the CLI argument list and determines whether
+// the prompt should be piped via stdin (for prompts exceeding StdinThreshold).
+func BuildInvokeArgs(backend *CLIBackend, prompt string) (args []string, useStdin bool) {
+	args = append([]string(nil), backend.Args...)
+	useStdin = len(prompt) > StdinThreshold
 	if !useStdin {
 		if backend.PromptFlag != "" {
 			args = append(args, backend.PromptFlag, prompt)
@@ -133,6 +129,16 @@ func Invoke(ctx context.Context, backend *CLIBackend, prompt string, timeoutSec 
 			args = append(args, prompt)
 		}
 	}
+	return args, useStdin
+}
+
+// Invoke executes a CLI backend with the given prompt and timeout.
+func Invoke(ctx context.Context, backend *CLIBackend, prompt string, timeoutSec int) (string, error) {
+	timeout := time.Duration(timeoutSec) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	args, useStdin := BuildInvokeArgs(backend, prompt)
 
 	cmd := exec.CommandContext(ctx, backend.Command, args...) //nolint:gosec // command is from trusted CLIBackend config, not user input
 	cmd.Stderr = os.Stderr

@@ -344,5 +344,24 @@ func normalizeWithAgent(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("output has only %d of 8 canonical headings (need at least 4)", headingCount)
 	}
 
+	// Output validation: warn if sections were lost (not a rejection — consolidation is expected).
+	inputSections := countMarkdownSections(string(data))
+	outputSections := countMarkdownSections(string(result))
+	if inputSections > outputSections+2 {
+		fmt.Printf("Warning: agent output has %d sections vs %d in input (-%d); verify no content was dropped\n",
+			outputSections, inputSections, inputSections-outputSections)
+	}
+
 	return result, nil
+}
+
+// countMarkdownSections counts lines starting with "## " in a markdown document.
+func countMarkdownSections(text string) int {
+	count := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+			count++
+		}
+	}
+	return count
 }
