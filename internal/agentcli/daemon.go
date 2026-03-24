@@ -120,18 +120,16 @@ func (d *Daemon) Start(ctx context.Context) error {
 	}
 	d.process = proc
 
+	// Set restrictive umask before creating socket to avoid a permissions
+	// window between Listen and Chmod.
+	oldMask := syscall.Umask(0o177) // creates socket with 0600
 	ln, err := net.Listen("unix", d.sockPath)
+	syscall.Umask(oldMask) // restore original umask
 	if err != nil {
 		d.process.cmd.Process.Kill() //nolint:errcheck // best-effort cleanup
 		return fmt.Errorf("listen on socket: %w", err)
 	}
 	d.listener = ln
-
-	if err := os.Chmod(d.sockPath, 0o600); err != nil {
-		_ = d.listener.Close()
-		d.process.cmd.Process.Kill() //nolint:errcheck // best-effort cleanup
-		return fmt.Errorf("chmod socket: %w", err)
-	}
 
 	pidData := fmt.Sprintf("%d", d.process.cmd.Process.Pid)
 	if err := os.WriteFile(d.pidPath, []byte(pidData), 0o600); err != nil {
@@ -165,7 +163,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 				idle := time.Since(lastActivity)
 				activityMu.Unlock()
 				if idle >= d.config.IdleTimeout {
-					_ = d.listener.Close()
+					_ = d.Stop()
 					return
 				}
 			case <-ctx.Done():
@@ -232,6 +230,10 @@ func (d *Daemon) Query(ctx context.Context, prompt string) (string, error) {
 		d.needsRestart = false
 		d.mu.Unlock()
 		if restartErr := d.restart(ctx); restartErr != nil {
+			// Re-mark for retry on next call so we don't get stuck.
+			d.mu.Lock()
+			d.needsRestart = true
+			d.mu.Unlock()
 			return "", fmt.Errorf("daemon restart failed: %w", restartErr)
 		}
 	} else {
@@ -322,6 +324,11 @@ func IsDaemonRunning(sockPath string) bool {
 // a DaemonResponse.
 func handleDaemonConn(c net.Conn, claude *claudeProcess, activityMu *sync.Mutex, lastActivity *time.Time) {
 	defer func() { _ = c.Close() }()
+	defer func() {
+		if r := recover(); r != nil {
+			_ = json.NewEncoder(c).Encode(DaemonResponse{Error: fmt.Sprintf("internal error: %v", r)})
+		}
+	}()
 
 	activityMu.Lock()
 	*lastActivity = time.Now()
