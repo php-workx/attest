@@ -76,6 +76,7 @@ func handleApprovalCommand(input string, personas *[]Persona, out io.Writer) ([]
 
 	case strings.HasPrefix(input, "d ") || strings.HasPrefix(input, "detail "):
 		handleDetail(input, *personas, out)
+		printPersonaSummary(*personas, out)
 		return nil, nil
 
 	default:
