@@ -243,7 +243,7 @@ func parseTechSpecFlags(args []string) techSpecFlags {
 	if len(args) > 0 {
 		f.action = args[0]
 	}
-	valuedFlags := map[string]bool{flagFrom: true, "--round": true, "--mode": true}
+	valuedFlags := map[string]bool{flagFrom: true, "--round": true, "--mode": true, "--persona": true, "--persona-dir": true}
 	for i := 1; i < len(args); i++ {
 		i = parseTechSpecArg(&f, args, i, valuedFlags)
 	}
@@ -422,6 +422,8 @@ type reviewFlags struct {
 	skipApproval   bool
 	rounds         int
 	mode           councilflow.ReviewMode
+	personaPaths   []string // repeatable --persona <path>
+	personaDirs    []string // repeatable --persona-dir <dir>
 }
 
 // parseReviewFlags extracts review-specific flags from the argument list.
@@ -451,6 +453,16 @@ func parseReviewFlags(flags []string) (reviewFlags, error) {
 					return rf, fmt.Errorf("invalid review mode %q (use: mvp, standard, production)", flags[i+1])
 				}
 				rf.mode = m
+				i++
+			}
+		case "--persona":
+			if i+1 < len(flags) {
+				rf.personaPaths = append(rf.personaPaths, flags[i+1])
+				i++
+			}
+		case "--persona-dir":
+			if i+1 < len(flags) {
+				rf.personaDirs = append(rf.personaDirs, flags[i+1])
 				i++
 			}
 		}
@@ -520,6 +532,13 @@ func cmdTechSpecReview(ctx context.Context, eng *engine.Engine, flags []string, 
 	cfg.SkipApproval = rf.skipApproval
 	cfg.JudgeInvokeFn = daemon
 
+	// Load custom personas from --persona / --persona-dir flags.
+	customPersonas, cpErr := loadCustomPersonas(rf)
+	if cpErr != nil {
+		return cpErr
+	}
+	cfg.CustomPersonas = customPersonas
+
 	// Inject prevention checks from high-effectiveness learnings.
 	learnStore := newLearningStore(eng.WorkDir)
 	if prevention := learnStore.LoadPreventionContext(nil); prevention != "" {
@@ -571,6 +590,29 @@ func startJudgeDaemon(ctx context.Context, eng *engine.Engine) (invokeFn agentcl
 		return nil, noop
 	}
 	return daemon.QueryFunc(), func() { _ = daemon.Stop() }
+}
+
+// loadCustomPersonas loads custom persona prompt files from --persona and --persona-dir flags.
+func loadCustomPersonas(rf reviewFlags) ([]councilflow.Persona, error) {
+	var personas []councilflow.Persona
+	for _, path := range rf.personaPaths {
+		p, err := councilflow.LoadCustomPersona(path)
+		if err != nil {
+			return nil, fmt.Errorf("load persona %s: %w", path, err)
+		}
+		personas = append(personas, p)
+	}
+	for _, dir := range rf.personaDirs {
+		dirPersonas, err := councilflow.LoadCustomPersonasFromDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("load persona dir %s: %w", dir, err)
+		}
+		personas = append(personas, dirPersonas...)
+	}
+	if len(personas) > 0 {
+		fmt.Printf("  custom personas: %d loaded\n", len(personas))
+	}
+	return personas, nil
 }
 
 func cmdPlan(ctx context.Context, args []string) error {

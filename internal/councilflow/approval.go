@@ -116,10 +116,7 @@ func printPersonaSummary(personas []Persona, out io.Writer) {
 	w(out, "\n=== Review Personas (%d) ===\n\n", len(personas))
 	for i := range personas {
 		p := &personas[i]
-		typeLabel := "fixed"
-		if p.Type == PersonaDynamic {
-			typeLabel = "dynamic"
-		}
+		typeLabel := string(p.Type)
 		w(out, "  %d. %-35s [%s] via %s\n", i+1, p.DisplayName, typeLabel, p.Backend)
 		w(out, "     %s\n", truncateStr(p.Perspective, 100))
 		if p.Rationale != "" {

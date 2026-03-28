@@ -27,6 +27,7 @@ type CouncilConfig struct {
 	SkipApproval    bool              // skip interactive persona approval
 	StaggerDelay    int               // seconds between launching parallel reviewers/judges (default: 15)
 	JudgeInvokeFn   agentcli.InvokeFn // daemon-bound invoke for consolidated judge queries; nil = default
+	CustomPersonas  []Persona         // custom personas loaded from --persona prompt files
 }
 
 // DefaultConfig returns a config with sensible defaults.
@@ -466,6 +467,7 @@ func maybeApprovePersonas(personas []Persona, cfg CouncilConfig) ([]Persona, err
 
 func buildPersonaSet(ctx context.Context, spec, roundDir string, cfg CouncilConfig) ([]Persona, error) {
 	personas := FixedPersonas()
+	personas = append(personas, cfg.CustomPersonas...)
 	if cfg.SkipDynPersonas || cfg.DryRun {
 		return personas, nil
 	}
