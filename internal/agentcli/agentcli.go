@@ -64,12 +64,12 @@ func ResolveCommand(name string) string {
 }
 
 // BackendFor returns the CLI backend for a persona with a given backend name and model preference.
-// If the backend name is unknown, it defaults to Claude.
+// If the backend name is unknown or disabled via FABRIKK_DISABLED_BACKENDS, it defaults to Claude.
 func BackendFor(backendName, modelPref string) CLIBackend {
 	base, ok := KnownBackends[backendName]
-	if !ok {
-		// Unknown backend: fall back to Claude with its default model.
-		// Don't apply modelPref — it was intended for the unknown backend
+	if !ok || isBackendDisabled(backendName) {
+		// Unknown or disabled backend: fall back to Claude with its default model.
+		// Don't apply modelPref — it was intended for the other backend
 		// and may be incompatible with Claude (e.g., "gpt-5.4").
 		return KnownBackends[BackendClaude]
 	}
@@ -106,6 +106,21 @@ func replaceArgValue(args []string, flag, value string) []string {
 		}
 	}
 	return append(args, flag, value)
+}
+
+// isBackendDisabled checks if a backend name appears in the FABRIKK_DISABLED_BACKENDS
+// environment variable (comma-separated list, e.g., "gemini,codex").
+func isBackendDisabled(name string) bool {
+	disabled := os.Getenv("FABRIKK_DISABLED_BACKENDS")
+	if disabled == "" {
+		return false
+	}
+	for _, d := range strings.Split(disabled, ",") {
+		if strings.TrimSpace(d) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // InvokeFn is the function signature for invoking a CLI backend.

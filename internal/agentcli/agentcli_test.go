@@ -43,6 +43,47 @@ func TestExtractFromCodeFence_Variants(t *testing.T) {
 	}
 }
 
+func TestBackendFor_DisabledFallsBackToClaude(t *testing.T) {
+	t.Setenv("FABRIKK_DISABLED_BACKENDS", "gemini")
+
+	got := BackendFor(BackendGemini, "")
+	want := KnownBackends[BackendClaude]
+	if got.Command != want.Command {
+		t.Errorf("disabled gemini: got command %q, want %q (claude fallback)", got.Command, want.Command)
+	}
+
+	// Claude itself should NOT be affected.
+	gotClaude := BackendFor(BackendClaude, "")
+	if gotClaude.Command != want.Command {
+		t.Errorf("claude should not be disabled: got %q", gotClaude.Command)
+	}
+}
+
+func TestBackendFor_MultipleDisabled(t *testing.T) {
+	t.Setenv("FABRIKK_DISABLED_BACKENDS", "gemini,codex")
+
+	gotGemini := BackendFor(BackendGemini, "")
+	gotCodex := BackendFor(BackendCodex, "")
+	wantClaude := KnownBackends[BackendClaude]
+
+	if gotGemini.Command != wantClaude.Command {
+		t.Errorf("disabled gemini: got %q, want claude", gotGemini.Command)
+	}
+	if gotCodex.Command != wantClaude.Command {
+		t.Errorf("disabled codex: got %q, want claude", gotCodex.Command)
+	}
+}
+
+func TestBackendFor_NoneDisabled(t *testing.T) {
+	t.Setenv("FABRIKK_DISABLED_BACKENDS", "")
+
+	got := BackendFor(BackendGemini, "")
+	want := KnownBackends[BackendGemini]
+	if got.Command != want.Command {
+		t.Errorf("no disabled backends: gemini should work, got %q", got.Command)
+	}
+}
+
 func TestBuildInvokeArgs_ShortPrompt(t *testing.T) {
 	backend := &CLIBackend{Command: "claude", Args: []string{"-p"}}
 	args, useStdin := BuildInvokeArgs(backend, "hello world")
