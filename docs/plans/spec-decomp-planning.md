@@ -2,13 +2,13 @@
 
 **Status:** Planned
 **Branch:** TBD
-**Date:** 2026-03-21
+**Date:** 2026-03-21 (updated 2026-04-02)
 
 ---
 
 ## 1. Problem Statement
 
-attest's planning pipeline (prepare → tech-spec → plan → compile) is structurally complete and gated, but the **quality of decomposition is low**. The compiler groups up to 4 requirements per task based on text proximity, infers file paths from keywords, and produces no symbol-level detail. The result: tasks are structurally correct but informationally thin — agents implementing them must rediscover the codebase from scratch.
+fabrikk's planning pipeline (prepare → tech-spec → plan → compile) is structurally complete and gated, but the **quality of decomposition is low**. The compiler groups up to 4 requirements per task based on text proximity, infers file paths from keywords, and produces no symbol-level detail. The result: tasks are structurally correct but informationally thin — agents implementing them must rediscover the codebase from scratch.
 
 Three specific gaps:
 
@@ -102,6 +102,8 @@ type FileConflict struct {
 }
 ```
 
+**Note:** `ExecutionSlice` already has a `WaveID string` field. The wave computation populates this existing field rather than adding a new one.
+
 #### File-conflict matrix
 
 Before assigning tasks to waves, build a conflict matrix from `Scope.OwnedPaths`:
@@ -110,7 +112,7 @@ Before assigning tasks to waves, build a conflict matrix from `Scope.OwnedPaths`
 |---|---|---|
 | `internal/engine` | task-1, task-3 | YES → serialize |
 | `internal/compiler` | task-2 | no |
-| `cmd/attest` | task-4 | no |
+| `cmd/fabrikk` | task-4 | no |
 
 Conflicts are resolved by moving the later task (by Order) to the next wave. This preserves the dependency DAG while preventing parallel workers from touching the same files.
 
@@ -122,7 +124,7 @@ After wave assignment, build a registry of files that appear in multiple waves:
 |---|---|---|---|
 | `internal/state/types.go` | task-1 | task-5 | Wave 2 worktree must branch from post-Wave-1 SHA |
 
-This registry is displayed during `attest plan review` and stored in the execution plan for the orchestrator to enforce base-SHA refresh between waves.
+This registry is displayed during `fabrikk plan review` and stored in the execution plan for the orchestrator to enforce base-SHA refresh between waves.
 
 #### False dependency removal
 
@@ -137,7 +139,7 @@ This increases parallelism by removing artificial serialization from the current
 #### Integration
 
 - `CompileExecutionPlan` calls `ComputeWaves` after task creation
-- Wave assignments stored on `ExecutionSlice` (new `Wave int` field)
+- Wave assignments stored on `ExecutionSlice.WaveID` (existing field, currently unpopulated)
 - `renderExecutionPlanMarkdown` shows wave groupings
 - `ReviewExecutionPlan` validates wave assignments (no intra-wave file conflicts)
 
@@ -151,7 +153,12 @@ This increases parallelism by removing artificial serialization from the current
 
 **Phase 1 — Deterministic structural analysis** (fast, cached, no LLM tokens):
 
-Shell out to `code_intel.py` from the codereview skill (`~/workspaces/skill-codereview/scripts/code_intel.py`) which provides:
+Shell out to `code_intel.py` from the codereview skill. The script is discovered at runtime via `resolveCodeIntel()` which checks:
+1. `FABRIKK_CODE_INTEL` environment variable (explicit path override)
+2. `code_intel.py` on PATH
+3. Common install locations: `~/.claude/skills/codereview/scripts/code_intel.py`, `~/workspaces/skill-codereview/scripts/code_intel.py`
+
+The script provides:
 - **Tree-sitter AST extraction** (8 languages, regex fallback) — function signatures, imports, exports with line ranges and visibility
 - **Semantic similarity** — all-MiniLM-L6-v2 ONNX embeddings find related functions across files
 - **Dependency graph** — import edges + cross-file call edges + semantic similarity scores
@@ -159,13 +166,13 @@ Shell out to `code_intel.py` from the codereview skill (`~/workspaces/skill-code
 
 All output as JSON. Tree-sitter is optional (graceful regex fallback). Results are cached by file mtime — subsequent runs only re-analyze changed files.
 
-When `code_intel.py` is not available (e.g., no Python in PATH), fall back to pure LLM exploration.
+When `code_intel.py` is not available (no Python, script not found), fall back to pure LLM exploration (Phase 2 only).
 
 **Phase 2 — LLM interpretation** (uses structural data as context):
 
 Dispatch a CLI agent (via `agentcli`) with:
 - The normalized requirements from the `RunArtifact`
-- The structural analysis JSON from Phase 1 (symbols, dependency graph, semantic clusters)
+- The structural analysis JSON from Phase 1 (if available) — injected as a `## Codebase Structure` section in the prompt
 - Instructions to map requirements to code locations and return `ExplorationResult`
 
 The LLM doesn't waste tokens rediscovering file structure — it interprets requirements against the structural data:
@@ -174,118 +181,150 @@ The LLM doesn't waste tokens rediscovering file structure — it interprets requ
 3. **Flag gaps** — requirements that don't map to any existing symbol need new files
 4. **Suggest task grouping** — dependency graph edges inform wave computation
 
+When Phase 1 is unavailable, the LLM falls back to tool-based exploration (Grep/Glob/Read) to discover the same information — slower but still functional.
+
 #### Why hybrid, not pure LLM or pure AST
 
 - Pure LLM: wastes tokens on Grep/Read to rediscover what AST parsing finds instantly
 - Pure AST: can't match requirements to code by intent, only by name
 - Hybrid: deterministic analysis provides the facts, LLM provides the judgment
 
-The codereview skill is being migrated to Go — once complete, the extraction becomes a native fabrikk library instead of a subprocess call.
-
-#### Structural analysis dispatch
+#### Types
 
 ```go
-func (e *Engine) runStructuralAnalysis(ctx context.Context) (*StructuralAnalysis, error) {
-    // Try code_intel.py if available.
-    codeIntelPath := resolveCodeIntel() // checks PATH, common install locations
+// StructuralAnalysis holds the output of code_intel.py graph analysis.
+// Populated by Phase 1 (deterministic). Nil when code_intel.py is unavailable.
+type StructuralAnalysis struct {
+    Nodes []StructuralNode `json:"nodes"` // functions, types, methods
+    Edges []StructuralEdge `json:"edges"` // imports, calls, semantic similarity
+}
+
+type StructuralNode struct {
+    ID       string `json:"id"`       // "path/to/file.go::FunctionName"
+    Kind     string `json:"kind"`     // "function", "class", "struct", "method"
+    File     string `json:"file"`
+    Line     int    `json:"line"`
+    Exported bool   `json:"exported"`
+}
+
+type StructuralEdge struct {
+    From  string  `json:"from"`
+    To    string  `json:"to"`
+    Type  string  `json:"type"`  // "imports", "calls", "semantic_similarity"
+    Score float64 `json:"score"` // 0.0-1.0, only for semantic_similarity edges
+}
+
+// ExplorationResult holds the combined output of Phases 1+2.
+// Populated by the LLM agent using structural data as context.
+type ExplorationResult struct {
+    FileInventory []FileInfo     `json:"file_inventory"`
+    Symbols       []SymbolInfo   `json:"symbols"`
+    TestFiles     []TestFileInfo `json:"test_files"`
+    ReusePoints   []ReusePoint   `json:"reuse_points"`
+}
+
+type FileInfo struct {
+    Path      string `json:"path"`
+    Exists    bool   `json:"exists"`
+    IsNew     bool   `json:"is_new"`
+    LineCount int    `json:"line_count"`
+    Language  string `json:"language"` // "go", "python", "typescript", etc.
+}
+
+type SymbolInfo struct {
+    FilePath  string `json:"file_path"`
+    Line      int    `json:"line"`
+    Kind      string `json:"kind"`      // "func", "type", "interface", "method", "class", "trait"
+    Signature string `json:"signature"` // e.g., "func (s *Store) Add(l *Learning) error"
+}
+
+type TestFileInfo struct {
+    Path      string   `json:"path"`       // e.g., "internal/learning/store_test.go"
+    TestNames []string `json:"test_names"` // e.g., ["TestStoreAdd", "TestStoreQuery"]
+    Covers    string   `json:"covers"`     // the source file this test covers
+}
+
+type ReusePoint struct {
+    FilePath  string `json:"file_path"`
+    Line      int    `json:"line"`
+    Symbol    string `json:"symbol"`
+    Relevance string `json:"relevance"` // why this is relevant to the plan
+}
+```
+
+#### Data flow
+
+```
+DraftExecutionPlan
+  │
+  ├─ Phase 1: runStructuralAnalysis(ctx)
+  │    └─ Shell out to code_intel.py graph --root <workdir> --json
+  │    └─ Returns *StructuralAnalysis (nil if unavailable)
+  │
+  ├─ Phase 2: exploreForPlan(ctx, artifact, structuralAnalysis)
+  │    ├─ Build prompt: requirements + structural JSON (if available)
+  │    ├─ Dispatch via agentcli.InvokeFunc (or daemon QueryFunc)
+  │    └─ Parse JSON response into *ExplorationResult
+  │
+  ├─ Compile: compiler.CompileExecutionPlan(artifact, plan)
+  │    └─ Enriched with ExplorationResult data
+  │
+  └─ Persist: write exploration result to run directory
+```
+
+**Prompt size management:** The structural analysis JSON for a typical project (50 files, 200 functions) is ~15KB — well within context limits. For larger projects (500+ files), the prompt builder truncates to the top 100 functions by semantic relevance to the requirements, with a note that the full analysis is available at a file path the agent can Read.
+
+#### Implementation
+
+```go
+// runStructuralAnalysis shells out to code_intel.py for deterministic codebase analysis.
+// Returns nil (not error) when the tool is unavailable — caller proceeds with LLM-only exploration.
+func (e *Engine) runStructuralAnalysis(ctx context.Context) *StructuralAnalysis {
+    codeIntelPath := resolveCodeIntel()
     if codeIntelPath == "" {
-        return nil, nil // not available — caller falls back to pure LLM
+        return nil
     }
 
     cmd := exec.CommandContext(ctx, "python3", codeIntelPath, "graph",
-        "--root", e.WorkDir,
-        "--json",
-    )
+        "--root", e.WorkDir, "--json")
     out, err := cmd.Output()
     if err != nil {
-        fmt.Fprintf(os.Stderr, "  code_intel: %v (falling back to LLM exploration)\n", err)
-        return nil, nil
+        fmt.Fprintf(os.Stderr, "  code_intel: %v (falling back to LLM-only exploration)\n", err)
+        return nil
     }
 
     var analysis StructuralAnalysis
     if err := json.Unmarshal(out, &analysis); err != nil {
-        return nil, nil
+        fmt.Fprintf(os.Stderr, "  code_intel: parse error: %v\n", err)
+        return nil
     }
-    return &analysis, nil
-}
-```
-
-#### LLM exploration prompt
-
-The engine builds a structured prompt containing:
-- The normalized requirements from the `RunArtifact`
-- The structural analysis JSON (if available) — symbols, dependency graph, semantic edges
-- Instructions to return a JSON response matching the `ExplorationResult` schema
-
-The agent is instructed to:
-1. **Map requirements to code** — using the structural data, identify which symbols each requirement modifies
-2. **Find relevant files** — for each requirement, locate files likely to be modified or created
-3. **Identify reuse points** — semantic similarity edges + existing implementations the plan should build on
-4. **Find existing tests** — test files and test function names covering the relevant code
-5. **Flag new code** — requirements that don't map to existing symbols need new files/functions
-
-#### ExplorationResult type
-
-```go
-type ExplorationResult struct {
-    FileInventory []FileInfo     // actual files found
-    Symbols       []SymbolInfo   // functions, types, interfaces
-    TestFiles     []TestFileInfo // existing tests
-    ReusePoints   []ReusePoint   // existing code to build on
+    return &analysis
 }
 
-type FileInfo struct {
-    Path      string
-    Exists    bool
-    IsNew     bool   // needs to be created
-    LineCount int
-    Language  string // detected language (go, python, typescript, etc.)
-}
-
-type SymbolInfo struct {
-    FilePath  string
-    Line      int
-    Kind      string // "func", "type", "interface", "method", "class", "trait"
-    Signature string // e.g., "func (s *Store) Add(l *Learning) error"
-}
-
-type ReusePoint struct {
-    FilePath  string
-    Line      int
-    Symbol    string
-    Relevance string // why this is relevant to the plan
-}
-```
-
-#### Agent dispatch
-
-```go
-func (e *Engine) ExploreForPlan(ctx context.Context, artifact *state.RunArtifact) (*ExplorationResult, error) {
-    prompt := buildExplorationPrompt(artifact)
+// exploreForPlan dispatches an LLM agent to map requirements to code using structural context.
+func (e *Engine) exploreForPlan(ctx context.Context, artifact *state.RunArtifact, sa *StructuralAnalysis) (*ExplorationResult, error) {
+    prompt := buildExplorationPrompt(artifact, sa) // includes structural JSON when sa != nil
     backend := agentcli.BackendFor(agentcli.BackendClaude, "")
 
-    raw, err := agentcli.InvokeFunc(ctx, &backend, prompt, 120)
+    raw, err := agentcli.InvokeFunc(ctx, &backend, prompt, 180)
     if err != nil {
         return nil, fmt.Errorf("explore: %w", err)
     }
 
     var result ExplorationResult
-    if err := json.Unmarshal(extractJSON(raw), &result); err != nil {
+    if err := json.Unmarshal([]byte(agentcli.ExtractJSONBlock(raw, 0)), &result); err != nil {
         return nil, fmt.Errorf("parse exploration result: %w", err)
     }
     return &result, nil
 }
 ```
 
-The prompt requests JSON output matching the `ExplorationResult` schema. Response parsing uses `agentcli.ExtractJSONBlock` to handle markdown-wrapped responses.
-
 #### Integration
 
-- New engine method: `ExploreForPlan(ctx context.Context, artifact *state.RunArtifact) (*ExplorationResult, error)`
-- Called from `DraftExecutionPlan` before compilation
+- `DraftExecutionPlan` calls `runStructuralAnalysis` then `exploreForPlan` before compilation
 - Results populate `ExecutionSlice.FilesLikelyTouched` with verified paths
-- Results populate a new `ExecutionSlice.ImplementationDetail` field (symbol-level specs)
-- The exploration result is persisted to the run directory for the council review to reference
+- Results populate `ExecutionSlice.ImplementationDetail` (§2.7) with symbol-level specs
+- The exploration result is persisted to `<run-dir>/exploration.json` for council review
 
 #### Future: native Go integration
 
@@ -296,7 +335,7 @@ The codereview skill is being migrated from Python to Go. Once complete:
 
 Additional optional accelerators:
 - **Roam** (`roam-code`) — if `roam` is in PATH, use `roam search` / `roam context` / `roam impact` for pre-indexed structural analysis with 27-language support
-- When neither `code_intel.py` nor Roam is available, pure LLM exploration via `agentcli.Invoke` remains the fallback
+- When neither `code_intel.py` nor Roam is available, pure LLM exploration remains the fallback
 
 ### 2.4 Conformance Checks Per Task
 
@@ -307,9 +346,14 @@ Additional optional accelerators:
 #### Types
 
 ```go
+// ValidationCheck defines a mechanically verifiable assertion for a task.
 type ValidationCheck struct {
-    Type    string // "files_exist", "content_check", "tests", "command", "lint"
-    Config  map[string]string // type-specific configuration
+    Type   string `json:"type"`   // "files_exist", "content_check", "tests", "command", "lint"
+    // Type-specific fields:
+    Paths   []string `json:"paths,omitempty"`   // files_exist: paths that must exist
+    File    string   `json:"file,omitempty"`    // content_check: file to search
+    Pattern string   `json:"pattern,omitempty"` // content_check: regex pattern
+    Command string   `json:"command,omitempty"` // tests/command/lint: shell command to run
 }
 ```
 
@@ -317,13 +361,13 @@ Examples:
 
 ```go
 // files_exist: verify file was created
-ValidationCheck{Type: "files_exist", Config: map[string]string{"paths": "internal/learning/index.go"}}
+ValidationCheck{Type: "files_exist", Paths: []string{"internal/learning/index.go"}}
 
 // content_check: verify function exists
-ValidationCheck{Type: "content_check", Config: map[string]string{"file": "internal/learning/store.go", "pattern": "func.*AssembleContext"}}
+ValidationCheck{Type: "content_check", File: "internal/learning/store.go", Pattern: "func.*AssembleContext"}
 
 // tests: run specific test
-ValidationCheck{Type: "tests", Config: map[string]string{"command": "go test -run TestAssembleContext ./internal/learning/..."}}
+ValidationCheck{Type: "tests", Command: "go test -run TestAssembleContext ./internal/learning/..."}
 ```
 
 #### Derivation
@@ -352,18 +396,21 @@ The compiler derives validation checks from:
 
 | Persona | Focus | Backend |
 |---|---|---|
-| Scope Reviewer | Are slices well-scoped? File conflicts? Scope gaps? | codex |
-| Dependency Reviewer | Are dependencies correct? False deps? Missing deps? | codex |
+| Scope Reviewer | Are slices well-scoped? File conflicts? Scope gaps? | claude (or codex if available) |
+| Dependency Reviewer | Are dependencies correct? False deps? Missing deps? | claude (or codex if available) |
 | Completeness Reviewer | Does every requirement have a covering slice? Acceptance criteria sufficient? | claude |
 | Feasibility Reviewer | Are slices implementable? Too large? Missing context? | claude |
+
+**Note:** Persona backends fall back to Claude via `BackendFor` when a backend is disabled in `fabrikk.yaml`. This is transparent — the review proceeds with the same personas regardless of backend availability.
 
 #### Integration
 
 - New engine method: `CouncilReviewExecutionPlan(ctx context.Context, cfg councilflow.CouncilConfig) (*councilflow.CouncilResult, error)`
-- Called from `attest plan review --council` (opt-in initially, default later)
+- Called from `fabrikk plan review --council` (opt-in initially, default later)
 - The council receives: execution plan markdown + exploration results + tech spec
 - Council findings become `ReviewFinding` entries on the `ExecutionPlanReview`
 - Blocking council findings prevent plan approval
+- Custom personas can be injected via `--persona <path>` (same as tech-spec review)
 
 #### MVP mode (default)
 
@@ -386,9 +433,9 @@ type Boundaries struct {
 ```
 
 - `Always` constraints are injected into every task's `Constraints` field during enrichment
-- `AskFirst` items cause the engine to block and request human input
-- `Never` items are validated during verification — if a worker touches out-of-scope paths, verification fails
-- Boundaries can be set during `attest prepare` or via a `attest boundaries` command
+- `AskFirst` items cause `DraftExecutionPlan` to return an `ErrHumanInputRequired` error with the pending items. The CLI prints them and exits — the user adds the answers to the spec, then re-runs the command. No interactive blocking inside the engine.
+- `Never` items are validated during verification — if a worker touches out-of-scope paths, verification produces a warning finding
+- Boundaries can be set during `fabrikk prepare` or parsed from a `## Boundaries` section in the tech spec
 
 ### 2.7 Implementation Detail on Execution Slices
 
@@ -422,15 +469,15 @@ type FileChange struct {
 |------|--------|-----------|
 | `internal/compiler/compiler.go` | Change `maxGroupSize` to 1, add `ComputeWaves`, `detectFileConflicts`, `resolveConflicts`, false dep removal | +120 |
 | `internal/compiler/compiler_test.go` | Tests for wave computation, conflict detection, single-requirement tasks | +150 |
-| `internal/engine/explore.go` | **NEW** — LLM agent-based codebase exploration (prompt building, agent dispatch, response parsing) | ~150 |
-| `internal/engine/explore_test.go` | **NEW** — Exploration tests (stubbed agent responses) | ~100 |
-| `internal/state/types.go` | Add `Wave`, `FileConflict`, `ValidationCheck`, `Boundaries`, `ImplementationDetail`, `FileChange` types. Add `Wave` field to `ExecutionSlice`. Add `ValidationChecks` to `Task`. Add `Boundaries` to `RunArtifact`. | +50 |
-| `internal/engine/plan.go` | Add `ExploreForPlan`, `CouncilReviewExecutionPlan`. Update `DraftExecutionPlan` to call exploration + wave computation. Update `ReviewExecutionPlan` to validate waves and run optional council. | +150 |
+| `internal/engine/explore.go` | **NEW** — Hybrid codebase exploration: `runStructuralAnalysis` (code_intel.py dispatch), `exploreForPlan` (LLM agent with structural context), `resolveCodeIntel`, `buildExplorationPrompt` | ~200 |
+| `internal/engine/explore_test.go` | **NEW** — Exploration tests (stubbed agent responses, structural analysis parsing) | ~120 |
+| `internal/state/types.go` | Add `StructuralAnalysis`, `StructuralNode`, `StructuralEdge`, `ExplorationResult`, `FileInfo`, `SymbolInfo`, `TestFileInfo`, `ReusePoint`, `FileConflict`, `ValidationCheck`, `Boundaries`, `ImplementationDetail`, `FileChange` types. Add `ValidationChecks` to `Task`. Add `Boundaries` to `RunArtifact`. | +80 |
+| `internal/engine/plan.go` | Update `DraftExecutionPlan` to call exploration + wave computation. Add `CouncilReviewExecutionPlan`. Update `ReviewExecutionPlan` to validate waves and run optional council. | +150 |
 | `internal/engine/plan_test.go` | Tests for exploration integration, council review wiring, wave validation | +100 |
 | `internal/ticket/format.go` | Render `ValidationChecks` and `ImplementationDetail` in ticket body | +30 |
-| `cmd/attest/main.go` | Add `--council` flag to `plan review`, add `boundaries` command | +20 |
+| `cmd/fabrikk/main.go` | Add `--council` flag to `plan review`, add `boundaries` command | +20 |
 
-**Estimated total:** ~870 new/modified lines.
+**Estimated total:** ~970 new/modified lines.
 
 ## 4. Implementation Order
 
@@ -444,7 +491,7 @@ type FileChange struct {
 
 ### Wave 2: Wave computation (depends on Wave 1)
 
-4. **Wave computation** — Implement `ComputeWaves`, `detectFileConflicts`, `resolveConflicts` in `compiler.go`. Add `Wave` field to `ExecutionSlice`. Update `DraftExecutionPlan` to call wave computation. Update `renderExecutionPlanMarkdown` to show wave groupings.
+4. **Wave computation** — Implement `ComputeWaves`, `detectFileConflicts`, `resolveConflicts` in `compiler.go`. Populate `ExecutionSlice.WaveID`. Update `DraftExecutionPlan` to call wave computation. Update `renderExecutionPlanMarkdown` to show wave groupings.
 
 5. **False dependency removal** — Implement dependency necessity validation. Remove lane-based deps where no file overlap exists.
 
@@ -452,29 +499,37 @@ type FileChange struct {
 
 ### Wave 3: Exploration (depends on Wave 1)
 
-7. **Codebase exploration** — Implement `ExploreForPlan` in `engine/explore.go`. Build structured exploration prompt from requirements. Dispatch via `agentcli.Invoke`. Parse JSON response into `ExplorationResult`.
+7. **Structural analysis** — Implement `runStructuralAnalysis` and `resolveCodeIntel` in `engine/explore.go`. Shell out to `code_intel.py`, parse `StructuralAnalysis` JSON. Graceful fallback when unavailable.
 
-8. **Implementation detail** — Add `ImplementationDetail` to `ExecutionSlice`. Populate from exploration results. Render in ticket body.
+8. **LLM exploration** — Implement `exploreForPlan` and `buildExplorationPrompt` in `engine/explore.go`. Build prompt with requirements + structural context. Dispatch via `agentcli.InvokeFunc`. Parse `ExplorationResult`.
 
-9. **Conformance check derivation** — Derive `ValidationChecks` from exploration results (files_exist for new files, content_check for new functions, tests for test files).
+9. **Implementation detail** — Add `ImplementationDetail` to `ExecutionSlice`. Populate from exploration results. Render in ticket body.
+
+10. **Conformance check derivation** — Derive `ValidationChecks` from exploration results (files_exist for new files, content_check for new functions, tests for test files).
 
 ### Wave 4: Council review (depends on Waves 2-3)
 
-10. **Council review wiring** — Implement `CouncilReviewExecutionPlan`. Wire personas (scope, dependency, completeness, feasibility). MVP mode: 1 round, 4 reviewers.
+11. **Council review wiring** — Implement `CouncilReviewExecutionPlan`. Wire personas (scope, dependency, completeness, feasibility). MVP mode: 1 round, 4 reviewers.
 
-11. **CLI integration** — Add `--council` flag to `attest plan review`. Default to MVP mode (1 round). Display findings.
+12. **CLI integration** — Add `--council` flag to `fabrikk plan review`. Default to MVP mode (1 round). Display findings.
 
 ### Wave 5: Boundaries (depends on Wave 1)
 
-12. **Boundary enforcement** — `Always` constraints injected into task `Constraints`. `Never` items validated during verification. `AskFirst` blocks engine progression.
+13. **Boundary enforcement** — `Always` constraints injected into task `Constraints`. `Never` items validated during verification. `AskFirst` returns `ErrHumanInputRequired` from `DraftExecutionPlan`.
 
-13. **CLI command** — `attest boundaries set --always "..." --never "..."` or parse from tech spec `## Boundaries` section.
+14. **CLI command** — `fabrikk boundaries set --always "..." --never "..."` or parse from tech spec `## Boundaries` section.
 
 ## 5. Design Decisions
 
-### LLM agent exploration, not AST parsing
+### Hybrid exploration: deterministic analysis + LLM interpretation
 
-We dispatch a CLI agent (Claude/Codex) to explore the codebase before planning. This is language-agnostic by construction — the agent understands any language and uses Grep/Glob/Read to discover symbols. No per-language AST extractors to write or maintain. The cost is covered by existing user subscriptions since we use local CLI tools. Deterministic accelerators (Roam, Go AST) can be layered in later as optional optimizations for indexed or Go-only projects.
+We use a two-phase approach for codebase exploration before planning:
+1. **Phase 1:** Shell out to `code_intel.py` (tree-sitter AST + semantic embeddings) for deterministic structural analysis — fast, cached, language-agnostic across 8 languages
+2. **Phase 2:** Dispatch an LLM agent with the structural data as context — the agent maps requirements to code by intent, not just by name
+
+This is better than either approach alone. The LLM doesn't waste tokens rediscovering file structure. The deterministic analysis doesn't miss intent-level connections.
+
+When `code_intel.py` is unavailable (no Python), Phase 2 runs standalone using tool-based exploration (Grep/Glob/Read). The codereview skill is being migrated to Go — once complete, the subprocess call becomes a native library import.
 
 ### Wave computation at planning time, not execution time
 
@@ -486,7 +541,7 @@ Currently, waves are implicit (computed at execution time by `GetPendingTasks`).
 
 ### Council review as opt-in initially
 
-`attest plan review` defaults to structural-only (current behavior). `attest plan review --council` adds multi-model review. This lets us iterate on council personas and prompts without breaking the existing workflow. Once stabilized, council becomes default (like tech-spec review).
+`fabrikk plan review` defaults to structural-only (current behavior). `fabrikk plan review --council` adds multi-model review. This lets us iterate on council personas and prompts without breaking the existing workflow. Once stabilized, council becomes default (like tech-spec review).
 
 ### MVP review mode: 1 round, skip persona approval
 
@@ -498,27 +553,30 @@ Following user preference: MVP mode with a single review round and auto-approved
 |------|--------|------------|
 | Single-requirement tasks produce too many tasks | Task queue is large, overhead per task | Task count increases but each task is faster to complete. Net time is similar or better due to parallelism. |
 | LLM exploration produces inconsistent results | Agent may miss symbols or hallucinate file paths | Response schema is strict; results are validated against filesystem before use. Exploration is advisory — the compiler still produces valid tasks without it. |
+| `code_intel.py` not available on all systems | Phase 1 skipped, LLM explores without structural context | Graceful fallback: Phase 2 runs standalone. Slower but functional. |
 | Wave computation is NP-hard in worst case | Conflict resolution takes too long | Practical task graphs are sparse DAGs. Greedy conflict resolution (move later task to next wave) is O(n²) worst case, fast in practice. |
 | Council review adds latency to planning | Slower plan cycle | MVP mode (1 round) takes ~3-5 minutes. Structural review alone takes <1 second. User chooses when to invest in council review. |
 | False dependency removal breaks execution ordering | Tasks execute in wrong order | Only remove deps where no file overlap exists. Conservative: if uncertain, keep the dependency. |
-| Boundaries enforcement is too rigid | Blocks legitimate out-of-scope work | `Never` boundaries produce verification warnings, not hard failures. `AskFirst` can be overridden with `--force`. |
+| Boundaries enforcement is too rigid | Blocks legitimate out-of-scope work | `Never` boundaries produce verification warnings, not hard failures. `AskFirst` returns an error — the user provides input and re-runs. |
+| Structural analysis JSON too large for prompt | Context overflow on large projects (500+ files) | Truncate to top 100 functions by semantic relevance. Full analysis available at a file path the agent can Read. |
 
 ## 7. Verification
 
 1. `go build ./...` — compiles
-2. `go test -race ./internal/compiler/... ./internal/engine/... ./cmd/attest/...`
+2. `go test -race ./internal/compiler/... ./internal/engine/... ./cmd/fabrikk/...`
 3. `golangci-lint run`
-4. Manual: `attest plan draft <run-id>` with a spec containing 10+ requirements → verify single-requirement tasks
+4. Manual: `fabrikk plan draft <run-id>` with a spec containing 10+ requirements → verify single-requirement tasks
 5. Manual: verify wave groupings in execution plan markdown
 6. Manual: verify file-conflict matrix in review output
-7. Manual: `attest plan review --council <run-id>` → verify council findings
+7. Manual: `fabrikk plan review --council <run-id>` → verify council findings
 8. Manual: verify exploration results populate `ImplementationDetail` on slices
 9. Manual: verify `ValidationChecks` render in ticket body
 10. Manual: compile with exploration → verify `## Validation` section in tickets
+11. Manual: run with `code_intel.py` unavailable → verify graceful fallback to LLM-only
 
 ## 8. Relationship to Memory System
 
-This plan complements the agent memory system (docs/plans/agent-memory-system.md):
+This plan complements the agent memory system (docs/plans/done/agent-memory-system.md):
 
 - **Phase 2 extraction:** Council review of execution plans will produce findings that feed into the learning store (same extraction logic as tech-spec council review)
 - **Phase 1 enrichment:** Tasks compiled from the improved plan will be enriched with learnings from the store (existing behavior, unaffected)
