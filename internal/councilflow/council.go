@@ -468,7 +468,11 @@ func maybeApprovePersonas(personas []Persona, cfg CouncilConfig) ([]Persona, err
 func buildPersonaSet(ctx context.Context, spec, roundDir string, cfg CouncilConfig) ([]Persona, error) {
 	personas := FixedPersonas()
 	personas = append(personas, cfg.CustomPersonas...)
-	if cfg.SkipDynPersonas || cfg.DryRun {
+
+	// Skip dynamic generation when custom personas are provided — the user
+	// is explicitly defining the review perspectives they want. Generating
+	// dynamic personas on top dilutes focus and wastes tokens.
+	if cfg.SkipDynPersonas || cfg.DryRun || len(cfg.CustomPersonas) > 0 {
 		return personas, nil
 	}
 	dynPersonas, err := GeneratePersonas(ctx, spec, roundDir, cfg.Mode)
