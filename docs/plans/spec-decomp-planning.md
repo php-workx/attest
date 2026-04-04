@@ -45,9 +45,9 @@ const maxGroupSize = 4
 const maxGroupSize = 1
 ```
 
-**Exception:** Requirements that reference the same function/struct and can't be implemented independently remain grouped. The grouping logic in `shouldStartNewGroup` already handles this via theme/proximity checks — with `maxGroupSize = 1`, the theme check becomes the sole grouping mechanism.
+**Exception:** A task MAY contain more than one requirement only when all grouped requirements reference the same fully-qualified symbol (function, method, or type) as identified during codebase exploration (§2.3). When grouping occurs, the compiler MUST set `GroupingReason: "same_symbol"` and `GroupedRequirementIDs` on the task. Tests MUST assert that any task with more than one requirement carries `GroupingReason` and that all grouped requirement IDs map to the same symbol.
 
-**Impact on existing tests:** Tests that assert specific task counts will change. The compiler produces more, smaller tasks. Coverage remains 100% — every requirement still maps to exactly one task.
+**Impact on existing tests:** Tests that assert specific task counts will change. The compiler produces more, smaller tasks. Every requirement maps to exactly one task unless the same-symbol exception applies (in which case the task carries explicit grouping metadata).
 
 **Why:** An agent working on "Implement AT-FR-001" has one clear requirement, writes tests for that one thing, and gets reviewed on that scope. No ambiguity about what "done" means. Parallel execution improves because more tasks are independent.
 
@@ -62,26 +62,56 @@ const maxGroupSize = 1
 ```go
 // ComputeWaves assigns each task to a wave based on its dependency depth.
 func ComputeWaves(tasks []state.Task) []Wave {
-    depth := make(map[string]int) // task ID → wave number (0-indexed)
-
-    // Topological sort to compute depth
-    for _, task := range tasks {
-        computeDepth(task.TaskID, tasks, depth)
+    // Build lookup map for O(1) access during depth computation
+    taskMap := make(map[string]*state.Task, len(tasks))
+    for i := range tasks {
+        taskMap[tasks[i].TaskID] = &tasks[i]
     }
 
-    // Group by depth
+    depth := make(map[string]int) // task ID → wave number (0-indexed)
+
+    // Compute depth (memoized, must run after cycle validation)
+    for _, task := range tasks {
+        computeDepth(task.TaskID, taskMap, depth)
+    }
+
+    // Group by depth, assigning WaveID as "wave-N" (e.g., "wave-0", "wave-1")
     waves := groupByDepth(tasks, depth)
 
-    // Validate: no file conflicts within a wave
-    for i := range waves {
-        conflicts := detectFileConflicts(waves[i].Tasks)
-        if len(conflicts) > 0 {
-            // Serialize conflicting tasks: move later ones to next wave
-            waves = resolveConflicts(waves, i, conflicts)
+    // Resolve intra-wave file conflicts (fixed-point: re-check after each move).
+    // Each pass resolves at least one conflict, so termination is guaranteed
+    // in O(n) passes, O(n²) total comparisons.
+    for changed := true; changed; {
+        changed = false
+        for i := range waves {
+            conflicts := detectFileConflicts(waves[i].Tasks)
+            if len(conflicts) > 0 {
+                waves = resolveConflicts(waves, i, conflicts)
+                changed = true
+                break // restart from wave 0 — earlier waves may now conflict
+            }
         }
     }
 
     return waves
+}
+
+// computeDepth returns the wave depth for a task (0 = no dependencies).
+// Memoized via the depth map. Must be called after cycle validation.
+func computeDepth(taskID string, taskMap map[string]*state.Task, depth map[string]int) int {
+    if d, ok := depth[taskID]; ok {
+        return d
+    }
+    task := taskMap[taskID]
+    maxDep := 0
+    for _, dep := range task.DependsOn {
+        d := computeDepth(dep, taskMap, depth) + 1
+        if d > maxDep {
+            maxDep = d
+        }
+    }
+    depth[taskID] = maxDep
+    return maxDep
 }
 ```
 
@@ -90,7 +120,7 @@ func ComputeWaves(tasks []state.Task) []Wave {
 ```go
 // Wave groups tasks that can execute in parallel.
 type Wave struct {
-    WaveID int
+    WaveID string   // matches ExecutionSlice.WaveID and Task.WaveID
     Tasks  []string // task IDs
 }
 
@@ -102,19 +132,33 @@ type FileConflict struct {
 }
 ```
 
-**Note:** `ExecutionSlice` already has a `WaveID string` field. The wave computation populates this existing field rather than adding a new one.
+**Note:** `WaveID string` is a new field added to `ExecutionSlice` in this change. The wave computation populates it after task compilation.
+
+#### Path normalization
+
+`Scope.OwnedPaths` MUST be normalized to file-level paths before wave computation. Directory entries are expanded to the set of files they contain (non-recursive; only direct children). Conflict detection operates exclusively on normalized file paths — two tasks conflict when they claim the same normalized file path.
 
 #### File-conflict matrix
 
-Before assigning tasks to waves, build a conflict matrix from `Scope.OwnedPaths`:
+After normalization, build a conflict matrix from `Scope.OwnedPaths`:
 
 | File | Tasks | Conflict? |
 |---|---|---|
-| `internal/engine` | task-1, task-3 | YES → serialize |
-| `internal/compiler` | task-2 | no |
-| `cmd/fabrikk` | task-4 | no |
+| `internal/engine/plan.go` | task-1, task-3 | YES → serialize |
+| `internal/compiler/compiler.go` | task-2 | no |
+| `cmd/fabrikk/main.go` | task-4 | no |
 
-Conflicts are resolved by moving the later task (by Order) to the next wave. This preserves the dependency DAG while preventing parallel workers from touching the same files.
+Conflicts are resolved by moving the later task (by Order) to the next wave. Before placing a task into wave W, `resolveConflicts` verifies that no task already in W depends on the moved task (directly or transitively). If a dependent exists, it is cascaded forward to W+1. This preserves the dependency DAG while preventing parallel workers from touching the same files.
+
+**Granularity note:** `OwnedPaths` are directory-level in the current compiler (e.g., `internal/compiler`). For MVP, conflict detection uses `OwnedPaths` as-is — this over-serializes tasks within the same directory but is safe. When exploration results are available (§2.3), `FilesLikelyTouched` provides file-level granularity and should be preferred for conflict detection:
+```go
+func conflictPaths(task state.Task) []string {
+    if len(task.Scope.FilesLikelyTouched) > 0 {
+        return task.Scope.FilesLikelyTouched
+    }
+    return task.Scope.OwnedPaths
+}
+```
 
 #### Cross-wave shared file registry
 
@@ -132,16 +176,17 @@ For each `DependsOn` entry, verify the dependency is real:
 
 1. Does the blocked task modify files that the blocker also modifies? → **Keep**
 2. Does the blocked task read output produced by the blocker? → **Keep** (checked via `RequirementIDs` overlap)
-3. Is the dependency only lane-based ordering (same requirement family)? → **Remove** if no file overlap
+3. Does the blocked task's `FilesLikelyTouched` or `ReadOnlyPaths` overlap with the blocker's `OwnedPaths`? → **Keep** (read-after-write dependency)
+4. Is the dependency only lane-based ordering (same requirement family)? → **Remove** if no overlap from rules 1-3
 
 This increases parallelism by removing artificial serialization from the current lane-based dependency scheme.
 
 #### Integration
 
-- `CompileExecutionPlan` calls `ComputeWaves` after task creation
-- Wave assignments stored on `ExecutionSlice.WaveID` (existing field, currently unpopulated)
+- `DraftExecutionPlan` calls `removeFalseDependencies` then `ComputeWaves` after building slices from `compiler.Compile`. This ordering is required: waves must reflect pruned dependencies
+- Wave assignments stored on a new `ExecutionSlice.WaveID` field (type `string`, added in this change)
 - `renderExecutionPlanMarkdown` shows wave groupings
-- `ReviewExecutionPlan` validates wave assignments (no intra-wave file conflicts)
+- `ReviewExecutionPlan` validates wave assignments (no intra-wave file conflicts, no intra-wave dependency edges)
 
 ### 2.3 Codebase Exploration Before Planning
 
@@ -157,6 +202,8 @@ Shell out to `code_intel.py` from the codereview skill. The script is discovered
 1. `FABRIKK_CODE_INTEL` environment variable (explicit path override)
 2. `code_intel.py` on PATH
 3. Common install locations: `~/.claude/skills/codereview/scripts/code_intel.py`, `~/workspaces/skill-codereview/scripts/code_intel.py`
+
+**Security note:** The resolved script runs with the user's permissions and inherits the user's trust boundary (same model as `~/.bashrc`). In shared or CI environments, set `FABRIKK_CODE_INTEL` to an explicit, trusted path rather than relying on the search order.
 
 The script provides:
 - **Tree-sitter AST extraction** (8 languages, regex fallback) — function signatures, imports, exports with line ranges and visibility
@@ -181,7 +228,10 @@ The LLM doesn't waste tokens rediscovering file structure — it interprets requ
 3. **Flag gaps** — requirements that don't map to any existing symbol need new files
 4. **Suggest task grouping** — dependency graph edges inform wave computation
 
-When Phase 1 is unavailable, the LLM falls back to tool-based exploration (Grep/Glob/Read) to discover the same information — slower but still functional.
+When Phase 1 is unavailable, `buildExplorationPrompt` produces a qualitatively different prompt:
+
+- **With structural data** (`sa != nil`): A reasoning prompt that provides the structural JSON inline and asks the agent to map requirements to symbols. No tool use needed — pure interpretation.
+- **Without structural data** (`sa == nil`): A tool-exploration prompt that instructs the agent to use Grep/Glob/Read with an explicit discovery strategy (directory listing → grep for requirement keywords → read key files). Includes tool-use instructions and a longer timeout. Both templates end with the same output schema instruction (`ExplorationResult` JSON).
 
 #### Why hybrid, not pure LLM or pure AST
 
@@ -264,31 +314,62 @@ DraftExecutionPlan
   ├─ Phase 2: exploreForPlan(ctx, artifact, structuralAnalysis)
   │    ├─ Build prompt: requirements + structural JSON (if available)
   │    ├─ Dispatch via agentcli.InvokeFunc (or daemon QueryFunc)
-  │    └─ Parse JSON response into *ExplorationResult
+  │    ├─ Parse JSON response into *ExplorationResult
+  │    └─ On error: log warning to stderr, set result = nil, continue
+  │
+  ├─ Validate: validateExplorationResult(explorationResult)
+  │    ├─ os.Stat every FileInfo.Path: flip Exists/IsNew if filesystem disagrees
+  │    ├─ os.Stat every SymbolInfo.FilePath: drop entries with nonexistent files
+  │    └─ Skipped when explorationResult is nil
   │
   ├─ Compile: compiler.CompileExecutionPlan(artifact, plan)
-  │    └─ Enriched with ExplorationResult data
+  │
+  ├─ Enrich: enrichSlices(plan.Slices, explorationResult)
+  │    └─ Populates FilesLikelyTouched and ImplementationDetail on each slice
   │
   └─ Persist: write exploration result to run directory
 ```
 
-**Prompt size management:** The structural analysis JSON for a typical project (50 files, 200 functions) is ~15KB — well within context limits. For larger projects (500+ files), the prompt builder truncates to the top 100 functions by semantic relevance to the requirements, with a note that the full analysis is available at a file path the agent can Read.
+**Prompt size management:** The structural analysis JSON for a typical project (50 files, 200 functions) is ~15KB — well within context limits. For larger projects (500+ files), the prompt builder truncates to the top 100 functions by: (1) keyword overlap between function name/signature and requirement text, (2) structural centrality (in-degree in the call graph — most-called functions are most likely relevant). Full analysis is written to `<run-dir>/structural-analysis.json` with a note in the prompt that the agent can Read this file for complete data.
 
 #### Implementation
 
 ```go
 // runStructuralAnalysis shells out to code_intel.py for deterministic codebase analysis.
 // Returns nil (not error) when the tool is unavailable — caller proceeds with LLM-only exploration.
+// structuralAnalysisTimeout bounds the code_intel.py subprocess.
+// Distinct from the LLM exploration timeout (180s) — Phase 1 is deterministic and should be faster.
+const structuralAnalysisTimeout = 60 * time.Second
+
 func (e *Engine) runStructuralAnalysis(ctx context.Context) *StructuralAnalysis {
     codeIntelPath := resolveCodeIntel()
     if codeIntelPath == "" {
         return nil
     }
 
+    ctx, cancel := context.WithTimeout(ctx, structuralAnalysisTimeout)
+    defer cancel()
+
     cmd := exec.CommandContext(ctx, "python3", codeIntelPath, "graph",
         "--root", e.WorkDir, "--json")
-    out, err := cmd.Output()
+    // Cap subprocess output at 10MB to prevent OOM from pathological inputs.
+    // Typical structural analysis JSON is ~15KB; 10MB is generous.
+    stdout, err := cmd.StdoutPipe()
     if err != nil {
+        fmt.Fprintf(os.Stderr, "  code_intel: %v (falling back to LLM-only exploration)\n", err)
+        return nil
+    }
+    if err := cmd.Start(); err != nil {
+        fmt.Fprintf(os.Stderr, "  code_intel: %v (falling back to LLM-only exploration)\n", err)
+        return nil
+    }
+    const maxOutputBytes = 10 << 20 // 10MB
+    out, err := io.ReadAll(io.LimitReader(stdout, maxOutputBytes))
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "  code_intel: read error: %v (falling back to LLM-only exploration)\n", err)
+        return nil
+    }
+    if err := cmd.Wait(); err != nil {
         fmt.Fprintf(os.Stderr, "  code_intel: %v (falling back to LLM-only exploration)\n", err)
         return nil
     }
@@ -306,25 +387,74 @@ func (e *Engine) exploreForPlan(ctx context.Context, artifact *state.RunArtifact
     prompt := buildExplorationPrompt(artifact, sa) // includes structural JSON when sa != nil
     backend := agentcli.BackendFor(agentcli.BackendClaude, "")
 
-    raw, err := agentcli.InvokeFunc(ctx, &backend, prompt, 180)
-    if err != nil {
-        return nil, fmt.Errorf("explore: %w", err)
+    timeout := 180
+    if sa == nil {
+        timeout = 360 // fallback LLM exploration needs more time for tool-based discovery
     }
 
+    invoke := agentcli.InvokeFunc
+    if e.InvokeFn != nil {
+        invoke = e.InvokeFn
+    }
+    raw, err := invoke(ctx, &backend, prompt, timeout)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "  explore: %v (proceeding without exploration)\n", err)
+        return nil, nil // advisory — compiler proceeds without exploration
+    }
+
+    // Extract JSON using the councilflow pattern (runner.go:280-301):
+    // (1) try ExtractFromCodeFence + json.Valid, (2) find first '{',
+    // (3) call ExtractJSONBlock with that offset.
+    jsonStr := extractExplorationJSON(raw)
     var result ExplorationResult
-    if err := json.Unmarshal([]byte(agentcli.ExtractJSONBlock(raw, 0)), &result); err != nil {
-        return nil, fmt.Errorf("parse exploration result: %w", err)
+    if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+        fmt.Fprintf(os.Stderr, "  explore: could not parse LLM response: %v (proceeding without exploration)\n", err)
+        return nil, nil // advisory — compiler proceeds without exploration
     }
     return &result, nil
+}
+
+// validateExplorationResult checks LLM-provided paths against the filesystem.
+// Flips Exists/IsNew flags where the filesystem disagrees with the LLM,
+// and drops SymbolInfo entries pointing to nonexistent files.
+func (e *Engine) validateExplorationResult(result *ExplorationResult) {
+    if result == nil {
+        return
+    }
+
+    for i := range result.FileInventory {
+        fi := &result.FileInventory[i]
+        _, err := os.Stat(filepath.Join(e.WorkDir, fi.Path))
+        exists := err == nil
+        fi.Exists = exists
+        fi.IsNew = !exists
+    }
+
+    valid := result.Symbols[:0]
+    for _, sym := range result.Symbols {
+        if _, err := os.Stat(filepath.Join(e.WorkDir, sym.FilePath)); err == nil {
+            valid = append(valid, sym)
+        }
+    }
+    result.Symbols = valid
 }
 ```
 
 #### Integration
 
-- `DraftExecutionPlan` calls `runStructuralAnalysis` then `exploreForPlan` before compilation
-- Results populate `ExecutionSlice.FilesLikelyTouched` with verified paths
-- Results populate `ExecutionSlice.ImplementationDetail` (§2.7) with symbol-level specs
+- `DraftExecutionPlan` calls `runStructuralAnalysis` then `exploreForPlan` before `compiler.Compile`. Exploration errors are logged and continued (result set to nil) — the compiler produces valid tasks without exploration data
+- `exploreForPlan` calls `validateExplorationResult` before returning: for each `FileInfo` where `Exists=true`, `os.Stat` the file and set `Exists=false` if missing; for each `SymbolInfo` and `ReusePoint`, verify the file exists and drop entries with nonexistent paths; log warnings for corrected entries
+- After `compiler.Compile` produces initial slices, `DraftExecutionPlan` enriches them with exploration data:
+  - Populates `ExecutionSlice.FilesLikelyTouched` with verified paths
+  - Populates `ExecutionSlice.ImplementationDetail` (§2.7) with symbol-level specs
+- The compiler remains decoupled from exploration types — enrichment is a separate pass
 - The exploration result is persisted to `<run-dir>/exploration.json` for council review
+
+#### Testing
+
+- `exploreForPlan` and `CouncilReviewExecutionPlan` (§2.5) MUST accept an injected backend interface (the existing `agentcli.InvokeFunc` / `QueryFunc` pattern) so callers can substitute stub implementations
+- Unit and integration tests MUST use fixture-backed stub responses loaded from checked-in JSON files in `testdata/`
+- Live model calls are allowed only in manual system tests and are not required for CI pass/fail
 
 #### Future: native Go integration
 
@@ -347,13 +477,17 @@ Additional optional accelerators:
 
 ```go
 // ValidationCheck defines a mechanically verifiable assertion for a task.
+// Only built-in allowlisted tools may be emitted by the compiler or verifier.
+// Requirement text, persona output, and exploration output must never be interpolated
+// into command arguments without validation against the allowlist.
 type ValidationCheck struct {
-    Type   string `json:"type"`   // "files_exist", "content_check", "tests", "command", "lint"
+    Type    string   `json:"type"`              // "files_exist", "content_check", "tests", "command", "lint"
     // Type-specific fields:
     Paths   []string `json:"paths,omitempty"`   // files_exist: paths that must exist
     File    string   `json:"file,omitempty"`    // content_check: file to search
     Pattern string   `json:"pattern,omitempty"` // content_check: regex pattern
-    Command string   `json:"command,omitempty"` // tests/command/lint: shell command to run
+    Tool    string   `json:"tool,omitempty"`    // tests/command/lint: executable name (must be in allowlist)
+    Args    []string `json:"args,omitempty"`    // tests/command/lint: argument array (no shell interpretation)
 }
 ```
 
@@ -367,23 +501,25 @@ ValidationCheck{Type: "files_exist", Paths: []string{"internal/learning/index.go
 ValidationCheck{Type: "content_check", File: "internal/learning/store.go", Pattern: "func.*AssembleContext"}
 
 // tests: run specific test
-ValidationCheck{Type: "tests", Command: "go test -run TestAssembleContext ./internal/learning/..."}
+ValidationCheck{Type: "tests", Tool: "go", Args: []string{"test", "-run", "TestAssembleContext", "./internal/learning/..."}}
 ```
 
 #### Derivation
 
-The compiler derives validation checks from:
+The compiler derives validation checks deterministically from exploration results:
 
-1. **Exploration results:** If a file is marked `IsNew`, add `files_exist` check
-2. **Requirement text:** If requirement mentions "test", add `tests` check with inferred test command
-3. **Symbol extraction:** If a new function is expected, add `content_check` with function signature pattern
-4. **Quality gate:** Always include the project's quality gate command
+1. **New files:** If `FileInfo.IsNew == true`, emit `files_exist` check with the file path
+2. **New symbols:** If `ImplementationDetail.SymbolsToAdd` is non-empty, emit `content_check` for each symbol's signature regex against its target file
+3. **New tests:** If `ImplementationDetail.TestsToAdd` is non-empty, emit `tests` check with `Tool: "go", Args: ["test", "-run", <TestName>, "./<package>/..."]`
+4. **Quality gate:** Always emit `command` check with the project's configured quality gate command
+
+Rules are evaluated in order; all matching rules emit checks (they are additive, not exclusive). When no exploration result is available, only rule 4 applies.
 
 #### Integration
 
 - `ValidationChecks` field on `ExecutionSlice` and `Task`
 - `ReviewExecutionPlan` validates that every slice has at least one check (warning if missing)
-- The verifier can run these checks in addition to its existing pipeline
+- The verifier can run these checks in addition to its existing pipeline. Checks are executed via `exec.Command(tool, args...)` with no shell interpretation; `Tool` must appear in a hardcoded allowlist (e.g., `go`, `python3`, `npm`, `make`)
 - `MarshalTicket` renders validation checks in a `## Validation` section
 
 ### 2.5 Council Review of Execution Plans
@@ -433,15 +569,37 @@ type Boundaries struct {
 ```
 
 - `Always` constraints are injected into every task's `Constraints` field during enrichment
-- `AskFirst` items cause `DraftExecutionPlan` to return an `ErrHumanInputRequired` error with the pending items. The CLI prints them and exits — the user adds the answers to the spec, then re-runs the command. No interactive blocking inside the engine.
-- `Never` items are validated during verification — if a worker touches out-of-scope paths, verification produces a warning finding
+- `AskFirst` items cause `DraftExecutionPlan` to return a `*HumanInputRequiredError` (defined in `internal/engine/`) with the pending items. The CLI inspects the error via `errors.As` and prints them, exiting with the following format:
+
+  ```
+  Plan draft requires human input for the following items:
+    - <item1>
+    - <item2>
+  Add answers to the ## Boundaries section of your tech spec and re-run:
+    fabrikk plan draft <run-id>
+  ```
+
+  No interactive blocking inside the engine.
+
+  ```go
+  // HumanInputRequiredError signals that DraftExecutionPlan cannot proceed
+  // without human answers to AskFirst boundary items.
+  type HumanInputRequiredError struct {
+      Items []string // the AskFirst items needing answers
+  }
+
+  func (e *HumanInputRequiredError) Error() string {
+      return fmt.Sprintf("human input required for %d items", len(e.Items))
+  }
+  ```
+- `Never` items are validated during verification — if a worker touches out-of-scope paths, verification produces a warning finding. MVP: warning finding only (advisory, not blocking). Post-MVP: the compiler SHOULD check Never paths against task `Scope.OwnedPaths` at compilation time and flag conflicts, preventing assignment of tasks that would violate boundaries.
 - Boundaries can be set during `fabrikk prepare` or parsed from a `## Boundaries` section in the tech spec
 
 ### 2.7 Implementation Detail on Execution Slices
 
 **Currently:** Slices have `Title`, `Goal`, `Notes` (prose) but no structured implementation guidance.
 
-**Change:** Add `ImplementationDetail` to `ExecutionSlice`.
+**Change:** Add `ImplementationDetail` to `ExecutionSlice` and `Task`. `CompileExecutionPlan` propagates the field from slice to task during compilation.
 
 ```go
 type ImplementationDetail struct {
@@ -460,18 +618,19 @@ type FileChange struct {
 
 - Populated by the exploration step (§2.3)
 - Rendered in the execution plan markdown for human review
-- Rendered in ticket body for worker agents
+- `CompileExecutionPlan` copies `ImplementationDetail` from `ExecutionSlice` to `Task` during task compilation
+- `MarshalTicket` renders `ImplementationDetail` from `Task` in ticket body for worker agents
 - Council reviewers see this detail and can validate feasibility
 
 ## 3. Files to Modify
 
 | File | Change | Est. lines |
 |------|--------|-----------|
-| `internal/compiler/compiler.go` | Change `maxGroupSize` to 1, add `ComputeWaves`, `detectFileConflicts`, `resolveConflicts`, false dep removal | +120 |
+| `internal/compiler/compiler.go` | Change `maxGroupSize` to 1, add `ComputeWaves`, `detectFileConflicts`, `resolveConflicts`, false dep removal, propagate `ValidationChecks` and `ImplementationDetail` from slice to task in `CompileExecutionPlan` | +130 |
 | `internal/compiler/compiler_test.go` | Tests for wave computation, conflict detection, single-requirement tasks | +150 |
-| `internal/engine/explore.go` | **NEW** — Hybrid codebase exploration: `runStructuralAnalysis` (code_intel.py dispatch), `exploreForPlan` (LLM agent with structural context), `resolveCodeIntel`, `buildExplorationPrompt` | ~200 |
+| `internal/engine/explore.go` | **NEW** — Hybrid codebase exploration: `runStructuralAnalysis` (code_intel.py dispatch), `exploreForPlan` (LLM agent with structural context), `extractExplorationJSON` (councilflow JSON extraction pattern), `validateExplorationResult` (filesystem validation), `resolveCodeIntel`, `buildExplorationPrompt` (two templates: structural-interpretation and tool-exploration) | ~240 |
 | `internal/engine/explore_test.go` | **NEW** — Exploration tests (stubbed agent responses, structural analysis parsing) | ~120 |
-| `internal/state/types.go` | Add `StructuralAnalysis`, `StructuralNode`, `StructuralEdge`, `ExplorationResult`, `FileInfo`, `SymbolInfo`, `TestFileInfo`, `ReusePoint`, `FileConflict`, `ValidationCheck`, `Boundaries`, `ImplementationDetail`, `FileChange` types. Add `ValidationChecks` to `Task`. Add `Boundaries` to `RunArtifact`. | +80 |
+| `internal/state/types.go` | Add `StructuralAnalysis`, `StructuralNode`, `StructuralEdge`, `ExplorationResult`, `FileInfo`, `SymbolInfo`, `TestFileInfo`, `ReusePoint`, `FileConflict`, `ValidationCheck`, `Boundaries`, `ImplementationDetail`, `FileChange` types. Add `ValidationChecks` and `ImplementationDetail` to `Task`. Add `WaveID string` to `ExecutionSlice`. Add `Boundaries` to `RunArtifact`. | +90 |
 | `internal/engine/plan.go` | Update `DraftExecutionPlan` to call exploration + wave computation. Add `CouncilReviewExecutionPlan`. Update `ReviewExecutionPlan` to validate waves and run optional council. | +150 |
 | `internal/engine/plan_test.go` | Tests for exploration integration, council review wiring, wave validation | +100 |
 | `internal/ticket/format.go` | Render `ValidationChecks` and `ImplementationDetail` in ticket body | +30 |
@@ -513,7 +672,7 @@ type FileChange struct {
 
 12. **CLI integration** — Add `--council` flag to `fabrikk plan review`. Default to MVP mode (1 round). Display findings.
 
-### Wave 5: Boundaries (depends on Wave 1)
+### Wave 5: Boundaries (depends on Wave 2)
 
 13. **Boundary enforcement** — `Always` constraints injected into task `Constraints`. `Never` items validated during verification. `AskFirst` returns `ErrHumanInputRequired` from `DraftExecutionPlan`.
 
@@ -552,13 +711,13 @@ Following user preference: MVP mode with a single review round and auto-approved
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Single-requirement tasks produce too many tasks | Task queue is large, overhead per task | Task count increases but each task is faster to complete. Net time is similar or better due to parallelism. |
-| LLM exploration produces inconsistent results | Agent may miss symbols or hallucinate file paths | Response schema is strict; results are validated against filesystem before use. Exploration is advisory — the compiler still produces valid tasks without it. |
+| LLM exploration produces inconsistent results | Agent may miss symbols or hallucinate file paths | `validateExplorationResult` runs os.Stat on all claimed paths: flips Exists/IsNew flags and drops SymbolInfo entries with nonexistent files. Exploration is advisory — the compiler still produces valid tasks without it. |
 | `code_intel.py` not available on all systems | Phase 1 skipped, LLM explores without structural context | Graceful fallback: Phase 2 runs standalone. Slower but functional. |
 | Wave computation is NP-hard in worst case | Conflict resolution takes too long | Practical task graphs are sparse DAGs. Greedy conflict resolution (move later task to next wave) is O(n²) worst case, fast in practice. |
 | Council review adds latency to planning | Slower plan cycle | MVP mode (1 round) takes ~3-5 minutes. Structural review alone takes <1 second. User chooses when to invest in council review. |
 | False dependency removal breaks execution ordering | Tasks execute in wrong order | Only remove deps where no file overlap exists. Conservative: if uncertain, keep the dependency. |
 | Boundaries enforcement is too rigid | Blocks legitimate out-of-scope work | `Never` boundaries produce verification warnings, not hard failures. `AskFirst` returns an error — the user provides input and re-runs. |
-| Structural analysis JSON too large for prompt | Context overflow on large projects (500+ files) | Truncate to top 100 functions by semantic relevance. Full analysis available at a file path the agent can Read. |
+| Structural analysis JSON too large for prompt | Context overflow on large projects (500+ files) | Truncate to top 100 functions by keyword overlap with requirement text and call-graph in-degree. Full analysis written to `<run-dir>/structural-analysis.json`; prompt notes the agent can Read this file. |
 
 ## 7. Verification
 
