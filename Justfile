@@ -113,12 +113,16 @@ sonar:
         echo "sonar-scanner not installed, skipping"; \
     elif [ ! -f .env ]; then \
         echo ".env missing, skipping sonar scan"; \
+    elif ! command -v curl >/dev/null 2>&1; then \
+        echo "curl not installed, skipping sonar scan"; \
+    elif ! curl -fsS http://localhost:9000/api/v2/analysis/version >/dev/null 2>&1; then \
+        echo "SonarQube server unavailable on localhost:9000, skipping sonar scan"; \
     else \
-        TOKEN=$(grep -E '^SONAR_TOKEN=[A-Za-z0-9_]+$' .env | cut -d= -f2); \
-        if [ -z "$TOKEN" ]; then \
+        TOKEN=$(grep -E '^SONAR_TOKEN=[A-Za-z0-9_]+$$' .env | cut -d= -f2); \
+        if [ -z "$$TOKEN" ]; then \
             echo "error: SONAR_TOKEN not found or invalid in .env"; exit 1; \
         fi; \
-        SONAR_TOKEN="$TOKEN" sonar-scanner -Dsonar.qualitygate.wait=true; \
+        SONAR_TOKEN="$$TOKEN" sonar-scanner -Dsonar.qualitygate.wait=true; \
     fi
 
 # --- Build targets ---

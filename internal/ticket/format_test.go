@@ -32,7 +32,13 @@ func testTask() state.Task {
 		DefaultModel:     "sonnet",
 		Status:           state.TaskPending,
 		RequiredEvidence: []string{"quality_gate_pass"},
-		ParentTaskID:     "run-123",
+		ImplementationDetail: state.ImplementationDetail{
+			FilesToModify: []state.FileChange{{Path: "internal/auth/service.go", Change: "Add auth service", IsNew: true}},
+			SymbolsToAdd:  []string{"func NewService() *Service"},
+			SymbolsToUse:  []string{"validateToken at auth.go:42"},
+			TestsToAdd:    []string{"TestNewService"},
+		},
+		ParentTaskID: "run-123",
 	}
 }
 
@@ -72,6 +78,21 @@ func TestMarshalUnmarshalRoundTrip(t *testing.T) {
 	}
 	if len(got.Scope.OwnedPaths) != len(task.Scope.OwnedPaths) {
 		t.Errorf("OwnedPaths len = %d, want %d", len(got.Scope.OwnedPaths), len(task.Scope.OwnedPaths))
+	}
+	if len(got.ImplementationDetail.FilesToModify) != 1 {
+		t.Fatalf("FilesToModify len = %d, want 1", len(got.ImplementationDetail.FilesToModify))
+	}
+	if got.ImplementationDetail.FilesToModify[0].Path != task.ImplementationDetail.FilesToModify[0].Path {
+		t.Errorf("FilesToModify[0].Path = %q, want %q", got.ImplementationDetail.FilesToModify[0].Path, task.ImplementationDetail.FilesToModify[0].Path)
+	}
+	if len(got.ImplementationDetail.SymbolsToAdd) != 1 || got.ImplementationDetail.SymbolsToAdd[0] != task.ImplementationDetail.SymbolsToAdd[0] {
+		t.Errorf("SymbolsToAdd = %v, want %v", got.ImplementationDetail.SymbolsToAdd, task.ImplementationDetail.SymbolsToAdd)
+	}
+	if len(got.ImplementationDetail.SymbolsToUse) != 1 || got.ImplementationDetail.SymbolsToUse[0] != task.ImplementationDetail.SymbolsToUse[0] {
+		t.Errorf("SymbolsToUse = %v, want %v", got.ImplementationDetail.SymbolsToUse, task.ImplementationDetail.SymbolsToUse)
+	}
+	if len(got.ImplementationDetail.TestsToAdd) != 1 || got.ImplementationDetail.TestsToAdd[0] != task.ImplementationDetail.TestsToAdd[0] {
+		t.Errorf("TestsToAdd = %v, want %v", got.ImplementationDetail.TestsToAdd, task.ImplementationDetail.TestsToAdd)
 	}
 }
 
@@ -152,6 +173,88 @@ func TestMarshalContainsAttestFields(t *testing.T) {
 		if !strings.Contains(content, field) {
 			t.Errorf("missing field %q in output", field)
 		}
+	}
+}
+
+func TestMarshalTicketIncludesValidationSection(t *testing.T) {
+	task := testTask()
+	task.ValidationChecks = []state.ValidationCheck{{
+		Type:    "command",
+		Paths:   []string{"internal/ticket/format.go"},
+		File:    "internal/ticket/format.go",
+		Pattern: "ValidationChecks",
+		Tool:    "go test",
+		Args:    []string{"./internal/ticket"},
+	}}
+
+	data, err := MarshalTicket(&task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "## Validation") {
+		t.Fatal("missing validation section")
+	}
+	for _, want := range []string{"**command**", "tool=go test", "file=internal/ticket/format.go", "pattern=`ValidationChecks`"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing validation detail %q", want)
+		}
+	}
+
+	got, err := UnmarshalTicket(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ValidationChecks) != 1 {
+		t.Fatalf("ValidationChecks len = %d, want 1", len(got.ValidationChecks))
+	}
+	if got.ValidationChecks[0].Tool != "go test" {
+		t.Fatalf("ValidationChecks[0].Tool = %q, want go test", got.ValidationChecks[0].Tool)
+	}
+}
+
+func TestMarshalTicketIncludesImplementationDetailSection(t *testing.T) {
+	task := testTask()
+
+	data, err := MarshalTicket(&task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "## Implementation Detail") {
+		t.Fatal("missing implementation detail section")
+	}
+	for _, want := range []string{
+		"- file `internal/auth/service.go`: Add auth service (new)",
+		"- add symbol `func NewService() *Service`",
+		"- use symbol `validateToken at auth.go:42`",
+		"- add test `TestNewService`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing implementation detail %q", want)
+		}
+	}
+
+	got, err := UnmarshalTicket(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ImplementationDetail.FilesToModify) != 1 || !got.ImplementationDetail.FilesToModify[0].IsNew {
+		t.Fatalf("FilesToModify = %+v, want one new file change", got.ImplementationDetail.FilesToModify)
+	}
+}
+
+func TestMarshalTicketOmitsEmptyImplementationDetailSection(t *testing.T) {
+	task := testTask()
+	task.ImplementationDetail = state.ImplementationDetail{}
+
+	data, err := MarshalTicket(&task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "## Implementation Detail") {
+		t.Fatal("implementation detail section should be omitted when detail is empty")
 	}
 }
 
@@ -253,9 +356,18 @@ func TestMarshalTicketWithLearningContext(t *testing.T) {
 
 func TestUpdateFrontmatterPreservesLearningFields(t *testing.T) {
 	task := state.Task{
-		TaskID:      "task-learn",
-		Title:       "Learning fields test",
-		Status:      state.TaskPending,
+		TaskID:             "task-learn",
+		Title:              "Learning fields test",
+		Status:             state.TaskPending,
+		FilesLikelyTouched: []string{"internal/engine/plan.go", "internal/engine/explore.go"},
+		ValidationChecks: []state.ValidationCheck{{
+			Type:  "files_exist",
+			Paths: []string{"internal/engine/plan.go"},
+		}},
+		ImplementationDetail: state.ImplementationDetail{
+			FilesToModify: []state.FileChange{{Path: "internal/engine/plan.go", Change: "Refine plan drafting"}},
+			TestsToAdd:    []string{"TestDraftExecutionPlan"},
+		},
 		Intent:      "Implement the feature safely",
 		Constraints: []string{"Do not modify shared state"},
 		Warnings:    []string{"High complexity area"},
@@ -293,6 +405,18 @@ func TestUpdateFrontmatterPreservesLearningFields(t *testing.T) {
 	}
 	if len(got.LearningIDs) != 2 || got.LearningIDs[0] != "lrn-001" || got.LearningIDs[1] != "lrn-002" {
 		t.Errorf("LearningIDs = %v, want [lrn-001 lrn-002]", got.LearningIDs)
+	}
+	if len(got.FilesLikelyTouched) != 2 || got.FilesLikelyTouched[0] != "internal/engine/plan.go" || got.FilesLikelyTouched[1] != "internal/engine/explore.go" {
+		t.Errorf("FilesLikelyTouched = %v, want [internal/engine/plan.go internal/engine/explore.go]", got.FilesLikelyTouched)
+	}
+	if len(got.ValidationChecks) != 1 || got.ValidationChecks[0].Type != "files_exist" {
+		t.Errorf("ValidationChecks = %v, want files_exist check", got.ValidationChecks)
+	}
+	if len(got.ImplementationDetail.FilesToModify) != 1 || got.ImplementationDetail.FilesToModify[0].Path != "internal/engine/plan.go" {
+		t.Errorf("ImplementationDetail.FilesToModify = %v, want internal/engine/plan.go", got.ImplementationDetail.FilesToModify)
+	}
+	if len(got.ImplementationDetail.TestsToAdd) != 1 || got.ImplementationDetail.TestsToAdd[0] != "TestDraftExecutionPlan" {
+		t.Errorf("ImplementationDetail.TestsToAdd = %v, want [TestDraftExecutionPlan]", got.ImplementationDetail.TestsToAdd)
 	}
 }
 

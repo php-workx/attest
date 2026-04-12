@@ -172,7 +172,18 @@ func newRoundTripFixture(now, approvedAt time.Time) roundTripFixture {
 			ExecutionPlanHash: "sha256:execution-plan",
 			Status:            state.ReviewPass,
 			Summary:           "Execution plan is actionable.",
-			ReviewedAt:        now,
+			Warnings: []state.ReviewWarning{{
+				WarningID: "epr-w-001",
+				SliceID:   "slice-001",
+				Summary:   "slice is missing likely file touch points",
+			}},
+			SharedFileRegistry: []state.SharedFileEntry{{
+				File:       "internal/state/types.go",
+				Wave1Tasks: []string{"slice-001"},
+				Wave2Tasks: []string{"slice-002"},
+				Mitigation: "Refresh the shared-file base SHA before starting the later wave.",
+			}},
+			ReviewedAt: now,
 		},
 		approval: &state.ArtifactApproval{
 			SchemaVersion: "0.1",
@@ -295,6 +306,15 @@ func assertRoundTripPlanningRecords(t *testing.T, runDir *state.RunDir, fixture 
 	}
 	if gotExecReview.ExecutionPlanHash != fixture.execReview.ExecutionPlanHash || gotExecReview.Status != state.ReviewPass {
 		t.Fatalf("unexpected execution plan review: %+v", gotExecReview)
+	}
+	if len(gotExecReview.SharedFileRegistry) != len(fixture.execReview.SharedFileRegistry) {
+		t.Fatalf("shared file registry len = %d, want %d", len(gotExecReview.SharedFileRegistry), len(fixture.execReview.SharedFileRegistry))
+	}
+	if len(gotExecReview.Warnings) != len(fixture.execReview.Warnings) {
+		t.Fatalf("warnings len = %d, want %d", len(gotExecReview.Warnings), len(fixture.execReview.Warnings))
+	}
+	if len(gotExecReview.SharedFileRegistry) > 0 && gotExecReview.SharedFileRegistry[0].File != fixture.execReview.SharedFileRegistry[0].File {
+		t.Fatalf("unexpected shared file registry: %+v", gotExecReview.SharedFileRegistry)
 	}
 
 	gotApproval, err := runDir.ReadExecutionPlanApproval()

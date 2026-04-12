@@ -2,12 +2,17 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -243,6 +248,9 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 		return nil, fmt.Errorf("verify: %w", err)
 	}
 
+	e.applyValidationChecks(ctx, task, artifact, result)
+	e.applyNeverBoundaryWarnings(result, artifact, report)
+
 	if err := e.writeVerifierResult(task, report, result); err != nil {
 		return nil, err
 	}
@@ -266,6 +274,202 @@ func (e *Engine) VerifyTask(ctx context.Context, task *state.Task, report *state
 	}
 
 	return result, nil
+}
+
+var validationCommandAllowlist = map[string]struct{}{"go": {}, "python3": {}, "npm": {}, "make": {}, "just": {}}
+
+func (e *Engine) applyValidationChecks(ctx context.Context, task *state.Task, artifact *state.RunArtifact, result *state.VerifierResult) {
+	for i, check := range task.ValidationChecks {
+		if isQualityGateValidationCheck(check, artifact) {
+			continue
+		}
+		checkResult, finding := e.runValidationCheck(ctx, task, i, check)
+		result.EvidenceChecks = append(result.EvidenceChecks, checkResult)
+		if finding != nil {
+			result.Pass = false
+			result.BlockingFindings = append(result.BlockingFindings, *finding)
+		}
+	}
+}
+
+func isQualityGateValidationCheck(check state.ValidationCheck, artifact *state.RunArtifact) bool {
+	if artifact == nil || artifact.QualityGate == nil || check.Type != "command" || check.Tool == "" {
+		return false
+	}
+	parts := strings.Fields(strings.TrimSpace(artifact.QualityGate.Command))
+	if len(parts) == 0 || parts[0] != check.Tool || len(parts[1:]) != len(check.Args) {
+		return false
+	}
+	for i := range check.Args {
+		if parts[i+1] != check.Args[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) applyNeverBoundaryWarnings(result *state.VerifierResult, artifact *state.RunArtifact, report *state.CompletionReport) {
+	if result == nil || artifact == nil || report == nil {
+		return
+	}
+	boundaries := artifact.Boundaries.Normalized().Never
+	if len(boundaries) == 0 {
+		return
+	}
+	for _, boundary := range boundaries {
+		if boundary == state.EmptyBoundaryItem {
+			result.NonBlockingFindings = append(result.NonBlockingFindings, state.Finding{
+				FindingID: fmt.Sprintf("%s-boundary-never-empty", result.TaskID),
+				Severity:  "low",
+				Category:  "boundary_never",
+				Summary:   "run artifact contains an empty never boundary item that could not be enforced deterministically",
+				DedupeKey: fmt.Sprintf("boundary-never-empty:%s", result.TaskID),
+			})
+			continue
+		}
+		violations := boundaryViolations(report.ChangedFiles, boundary, e.WorkDir)
+		if len(violations) == 0 {
+			continue
+		}
+		result.NonBlockingFindings = append(result.NonBlockingFindings, state.Finding{
+			FindingID: fmt.Sprintf("%s-boundary-never-%d", result.TaskID, len(result.NonBlockingFindings)+1),
+			Severity:  "low",
+			Category:  "boundary_never",
+			Summary:   fmt.Sprintf("Never boundary %q was touched by changed files: %s", boundary, strings.Join(violations, ", ")),
+			DedupeKey: fmt.Sprintf("boundary-never:%s:%s", result.TaskID, boundary),
+		})
+	}
+}
+
+func boundaryViolations(changedFiles []string, boundary, workDir string) []string {
+	normalizedBoundary := normalizeBoundaryPath(boundary, workDir)
+	if normalizedBoundary == "" {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(changedFiles))
+	violations := make([]string, 0, len(changedFiles))
+	for _, changed := range changedFiles {
+		normalizedChanged := normalizeBoundaryPath(changed, workDir)
+		if normalizedChanged == "" || !pathWithinBoundary(normalizedChanged, normalizedBoundary) {
+			continue
+		}
+		if _, ok := seen[normalizedChanged]; ok {
+			continue
+		}
+		seen[normalizedChanged] = struct{}{}
+		violations = append(violations, normalizedChanged)
+	}
+	sort.Strings(violations)
+	return violations
+}
+
+func normalizeBoundaryPath(path, workDir string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	clean := filepath.Clean(trimmed)
+	if workDir != "" && filepath.IsAbs(clean) {
+		if rel, err := filepath.Rel(workDir, clean); err == nil {
+			clean = rel
+		}
+	}
+	clean = filepath.ToSlash(clean)
+	if clean == "." {
+		return ""
+	}
+	return strings.Trim(clean, "/")
+}
+
+func pathWithinBoundary(path, boundary string) bool {
+	return path == boundary || strings.HasPrefix(path, boundary+"/")
+}
+
+func (e *Engine) runValidationCheck(ctx context.Context, task *state.Task, index int, check state.ValidationCheck) (state.Check, *state.Finding) {
+	checkName := fmt.Sprintf("validation_check_%02d", index+1)
+	switch check.Type {
+	case "files_exist":
+		missing := make([]string, 0, len(check.Paths))
+		for _, path := range check.Paths {
+			if _, err := os.Stat(e.validationPath(path)); err != nil {
+				missing = append(missing, path)
+			}
+		}
+		if len(missing) == 0 {
+			return state.Check{Name: checkName, Pass: true, Detail: "all required files exist"}, nil
+		}
+		detail := fmt.Sprintf("missing required files: %s", strings.Join(missing, ", "))
+		return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_files_exist", detail)
+	case "content_check":
+		if check.File == "" || check.Pattern == "" {
+			detail := "content_check requires both file and pattern"
+			return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_content_check", detail)
+		}
+		data, err := os.ReadFile(e.validationPath(check.File))
+		if err != nil {
+			detail := fmt.Sprintf("content_check could not read %s: %v", check.File, err)
+			return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_content_check", detail)
+		}
+		matched, err := regexp.Match(check.Pattern, data)
+		if err != nil {
+			detail := fmt.Sprintf("content_check has invalid pattern %q: %v", check.Pattern, err)
+			return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_content_check", detail)
+		}
+		if matched {
+			return state.Check{Name: checkName, Pass: true, Detail: fmt.Sprintf("pattern matched in %s", check.File)}, nil
+		}
+		detail := fmt.Sprintf("pattern %q not found in %s", check.Pattern, check.File)
+		return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_content_check", detail)
+	case "tests", "command":
+		return e.runValidationCommand(ctx, task, index, checkName, check)
+	default:
+		detail := fmt.Sprintf("unsupported validation check type %q", check.Type)
+		return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_type", detail)
+	}
+}
+
+func (e *Engine) runValidationCommand(ctx context.Context, task *state.Task, index int, checkName string, check state.ValidationCheck) (state.Check, *state.Finding) {
+	if check.Tool == "" {
+		detail := fmt.Sprintf("%s requires a tool", check.Type)
+		return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_tool", detail)
+	}
+	if _, ok := validationCommandAllowlist[check.Tool]; !ok {
+		detail := fmt.Sprintf("tool %q is not allowlisted", check.Tool)
+		return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_tool_allowlist", detail)
+	}
+
+	cmd := exec.CommandContext(ctx, check.Tool, check.Args...) //nolint:gosec // validation checks execute allowlisted local developer tools without shell interpretation
+	cmd.Dir = e.WorkDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		detail := fmt.Sprintf("%s %s failed with exit code %d: %s", check.Tool, strings.Join(check.Args, " "), exitCode, strings.TrimSpace(stderr.String()))
+		return state.Check{Name: checkName, Pass: false, Detail: detail}, validationFinding(task, index, "validation_command", detail)
+	}
+	return state.Check{Name: checkName, Pass: true, Detail: strings.TrimSpace(stdout.String())}, nil
+}
+
+func (e *Engine) validationPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(e.WorkDir, path)
+}
+
+func validationFinding(task *state.Task, index int, category, detail string) *state.Finding {
+	return &state.Finding{
+		FindingID: fmt.Sprintf("%s-validation-%02d", task.TaskID, index+1),
+		Severity:  "high",
+		Category:  category,
+		Summary:   detail,
+		DedupeKey: fmt.Sprintf("validation:%s:%d:%s", task.TaskID, index, category),
+	}
 }
 
 // writeVerifierResult persists the verifier result to the attempt-scoped report directory.
