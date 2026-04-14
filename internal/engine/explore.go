@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 const (
 	structuralAnalysisTimeout        = 60 * time.Second
 	maxStructuralAnalysisOutputBytes = 10 << 20
+	codeIntelCandidatesEnv           = "FABRIKK_CODE_INTEL_CANDIDATES"
 )
 
 // runStructuralAnalysis executes code_intel.py graph analysis for the current workdir.
@@ -148,26 +150,82 @@ func (e *Engine) exploreForPlan(ctx context.Context, artifact *state.RunArtifact
 	return &result, nil
 }
 
-// extractExplorationJSON returns the first valid JSON payload in the model output.
+// extractExplorationJSON returns the first valid exploration-shaped JSON payload in the model output.
 func extractExplorationJSON(raw string) string {
-	if candidate := agentcli.ExtractFromCodeFence(raw); candidate != "" && json.Valid([]byte(candidate)) {
-		return candidate
-	}
-
-	start := -1
-	for _, idx := range []int{strings.Index(raw, "{"), strings.Index(raw, "[")} {
-		if idx >= 0 && (start == -1 || idx < start) {
-			start = idx
+	var firstValid string
+	for _, candidate := range explorationJSONCandidates(raw) {
+		if candidate == "" || !json.Valid([]byte(candidate)) {
+			continue
+		}
+		if firstValid == "" {
+			firstValid = candidate
+		}
+		if looksLikeExplorationResultJSON(candidate) {
+			return candidate
 		}
 	}
-	if start == -1 {
-		return ""
+	return firstValid
+}
+
+func explorationJSONCandidates(raw string) []string {
+	candidates := make([]string, 0, 4)
+	candidates = append(candidates, codeFenceBlocks(raw)...)
+
+	for offset := 0; offset < len(raw); {
+		rel := strings.IndexAny(raw[offset:], "{[")
+		if rel < 0 {
+			break
+		}
+		start := offset + rel
+		candidate := agentcli.ExtractJSONBlock(raw, start)
+		if candidate != "" {
+			candidates = append(candidates, candidate)
+			offset = start + len(candidate)
+			continue
+		}
+		offset = start + 1
 	}
 
-	if candidate := agentcli.ExtractJSONBlock(raw, start); candidate != "" && json.Valid([]byte(candidate)) {
-		return candidate
+	return candidates
+}
+
+func codeFenceBlocks(raw string) []string {
+	var blocks []string
+	for offset := 0; offset < len(raw); {
+		relStart := strings.Index(raw[offset:], "```")
+		if relStart < 0 {
+			break
+		}
+		fenceStart := offset + relStart + len("```")
+		newline := strings.IndexByte(raw[fenceStart:], '\n')
+		if newline < 0 {
+			break
+		}
+		contentStart := fenceStart + newline + 1
+		relEnd := strings.Index(raw[contentStart:], "```")
+		if relEnd < 0 {
+			break
+		}
+		contentEnd := contentStart + relEnd
+		if block := strings.TrimSpace(raw[contentStart:contentEnd]); block != "" {
+			blocks = append(blocks, block)
+		}
+		offset = contentEnd + len("```")
 	}
-	return ""
+	return blocks
+}
+
+func looksLikeExplorationResultJSON(candidate string) bool {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(candidate), &payload); err != nil {
+		return false
+	}
+	for _, key := range []string{"file_inventory", "symbols", "test_files", "reuse_points"} {
+		if _, ok := payload[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // validateExplorationResult reconciles exploratory paths with the local filesystem.
@@ -268,6 +326,11 @@ func resolveCodeIntelWithHome(home string) string {
 	if path, err := exec.LookPath("code_intel.py"); err == nil {
 		return path
 	}
+	for _, candidate := range configuredCodeIntelCandidates(os.Getenv(codeIntelCandidatesEnv), home) {
+		if isExecutableFile(candidate) {
+			return candidate
+		}
+	}
 	for _, candidate := range codeIntelCandidates(home) {
 		if isExecutableFile(candidate) {
 			return candidate
@@ -286,6 +349,26 @@ func codeIntelCandidates(home string) []string {
 	}
 }
 
+func configuredCodeIntelCandidates(value, home string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	entries := filepath.SplitList(value)
+	candidates := make([]string, 0, len(entries)*2)
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		candidate := expandHomePath(entry, home)
+		candidates = append(candidates, candidate)
+		if filepath.Base(candidate) != "code_intel.py" {
+			candidates = append(candidates, filepath.Join(candidate, "code_intel.py"))
+		}
+	}
+	return candidates
+}
+
 func expandHomePath(path, home string) string {
 	if path == "~" && home != "" {
 		return home
@@ -300,6 +383,9 @@ func isExecutableFile(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
 	}
 	return info.Mode()&0o111 != 0
 }
@@ -328,11 +414,14 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	remaining := b.limit - b.buf.Len()
 	if remaining <= 0 {
 		b.truncated = true
+		// Report the full write length so exec.Cmd does not fail only because
+		// the diagnostic buffer reached its local cap.
 		return len(p), nil
 	}
 	if len(p) > remaining {
 		_, _ = b.buf.Write(p[:remaining])
 		b.truncated = true
+		// Report the full write length so exec.Cmd can keep draining the pipe.
 		return len(p), nil
 	}
 	_, _ = b.buf.Write(p)

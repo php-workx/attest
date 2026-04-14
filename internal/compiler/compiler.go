@@ -382,9 +382,36 @@ func resolveConflicts(waves []state.Wave, waveIndex int, conflicts []state.FileC
 	if len(conflicts) == 0 {
 		return waves
 	}
-	movedTaskID := conflicts[0].TaskB
+	movedTaskID := selectConflictTaskToMove(conflicts, order)
 	waves = moveTaskToWave(waves, movedTaskID, waveIndex+1, order)
 	return cascadeDependents(waves, movedTaskID, reverseDeps, order)
+}
+
+func selectConflictTaskToMove(conflicts []state.FileConflict, order map[string]int) string {
+	counts := make(map[string]int, len(conflicts)*2)
+	candidates := make([]string, 0, len(conflicts)*2)
+	seen := make(map[string]struct{}, len(conflicts)*2)
+	for _, conflict := range conflicts {
+		for _, taskID := range []string{conflict.TaskA, conflict.TaskB} {
+			counts[taskID]++
+			if _, ok := seen[taskID]; ok {
+				continue
+			}
+			seen[taskID] = struct{}{}
+			candidates = append(candidates, taskID)
+		}
+	}
+
+	movedTaskID := conflicts[0].TaskB
+	bestCount := counts[movedTaskID]
+	for _, taskID := range candidates {
+		count := counts[taskID]
+		if count > bestCount || (count == bestCount && order[taskID] > order[movedTaskID]) {
+			movedTaskID = taskID
+			bestCount = count
+		}
+	}
+	return movedTaskID
 }
 
 func cascadeDependents(waves []state.Wave, movedTaskID string, reverseDeps map[string][]string, order map[string]int) []state.Wave {

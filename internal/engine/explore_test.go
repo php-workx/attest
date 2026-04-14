@@ -52,6 +52,20 @@ func TestResolveCodeIntelSearchOrder(t *testing.T) {
 	}
 }
 
+func TestResolveCodeIntelUsesConfiguredCandidatePaths(t *testing.T) {
+	t.Setenv("FABRIKK_CODE_INTEL", "")
+	t.Setenv("PATH", t.TempDir())
+
+	toolDir := t.TempDir()
+	tool := writeExecutableScript(t, toolDir, "code_intel.py", "#!/bin/sh\nexit 0\n")
+	missingDir := filepath.Join(t.TempDir(), "missing")
+	t.Setenv(codeIntelCandidatesEnv, missingDir+string(os.PathListSeparator)+toolDir)
+
+	if got := resolveCodeIntelWithHome(t.TempDir()); got != tool {
+		t.Fatalf("resolveCodeIntelWithHome() with configured candidates = %q, want %q", got, tool)
+	}
+}
+
 func TestResolveCodeIntelWithHomeUnavailable(t *testing.T) {
 	t.Setenv("FABRIKK_CODE_INTEL", "")
 	t.Setenv("PATH", t.TempDir())
@@ -175,6 +189,37 @@ func TestExtractExplorationJSONPrefersCodeFence(t *testing.T) {
 	raw := "before\n```json\n{\"file_inventory\":[]}\n```\nafter"
 	if got := extractExplorationJSON(raw); got != `{"file_inventory":[]}` {
 		t.Fatalf("extractExplorationJSON() = %q", got)
+	}
+}
+
+func TestExtractExplorationJSONPrefersExplorationPayloadAcrossMultipleBlocks(t *testing.T) {
+	raw := "metadata\n```json\n{\"note\":\"not the exploration result\"}\n```\nthen\n```json\n{\"file_inventory\":[{\"path\":\"internal/engine/explore.go\"}],\"symbols\":[]}\n```"
+	want := `{"file_inventory":[{"path":"internal/engine/explore.go"}],"symbols":[]}`
+	if got := extractExplorationJSON(raw); got != want {
+		t.Fatalf("extractExplorationJSON() = %q, want %q", got, want)
+	}
+}
+
+func TestExtractExplorationJSONScansPastFirstInlineJSON(t *testing.T) {
+	raw := "metadata {\"note\":\"not the exploration result\"}\nresult {\"file_inventory\":[],\"reuse_points\":[]}"
+	want := `{"file_inventory":[],"reuse_points":[]}`
+	if got := extractExplorationJSON(raw); got != want {
+		t.Fatalf("extractExplorationJSON() = %q, want %q", got, want)
+	}
+}
+
+func TestLimitedBufferReportsFullWriteAfterTruncation(t *testing.T) {
+	buf := &limitedBuffer{limit: 3}
+
+	n, err := buf.Write([]byte("abcdef"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len("abcdef") {
+		t.Fatalf("Write count = %d, want %d", n, len("abcdef"))
+	}
+	if got := buf.String(); got != "abc...<truncated>" {
+		t.Fatalf("String() = %q, want truncated marker", got)
 	}
 }
 

@@ -133,3 +133,21 @@ func TestRunFormatsAskFirstHumanInputGuidance(t *testing.T) {
 		t.Fatalf("technical spec changed unexpectedly: %q", string(data))
 	}
 }
+
+func TestParseBoundariesFromTechSpecHandlesCRLFWithoutWholeFileSplit(t *testing.T) {
+	spec := []byte("# Spec\r\n\r\n## Boundaries\r\n\r\n**Always:**\r\n- keep tests focused\r\n\r\n**Ask First:**\r\n- confirm rollout window\r\n\r\n**Never:**\r\n- touch production data\r\n\r\n## Next Section\r\n- ignored\r\n")
+
+	got, err := parseBoundariesFromTechSpec(spec)
+	if err != nil {
+		t.Fatalf("parseBoundariesFromTechSpec: %v", err)
+	}
+	if len(got.Always) != 1 || got.Always[0] != "keep tests focused" {
+		t.Fatalf("Always = %#v, want keep tests focused", got.Always)
+	}
+	if len(got.AskFirst) != 1 || got.AskFirst[0] != "confirm rollout window" {
+		t.Fatalf("AskFirst = %#v, want confirm rollout window", got.AskFirst)
+	}
+	if len(got.Never) != 1 || got.Never[0] != "touch production data" {
+		t.Fatalf("Never = %#v, want touch production data", got.Never)
+	}
+}

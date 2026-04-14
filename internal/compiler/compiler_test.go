@@ -339,6 +339,27 @@ func TestComputeWavesSerializesOverlappingOwnedPaths(t *testing.T) {
 	}
 }
 
+func TestComputeWavesMovesHighestConflictDegreeTaskFirst(t *testing.T) {
+	tasks := []state.Task{
+		{TaskID: "task-a", Scope: state.TaskScope{OwnedPaths: []string{"internal/engine"}}},
+		{TaskID: "task-b", Scope: state.TaskScope{OwnedPaths: []string{"internal/engine/plan.go"}}},
+		{TaskID: "task-c", Scope: state.TaskScope{OwnedPaths: []string{"internal/engine/explore.go"}}},
+		{TaskID: "task-d", Scope: state.TaskScope{OwnedPaths: []string{"internal/engine/engine.go"}}},
+	}
+
+	waves := compiler.ComputeWaves(tasks)
+
+	if len(waves) != 2 {
+		t.Fatalf("wave count = %d, want 2", len(waves))
+	}
+	if got := waves[0].Tasks; !reflect.DeepEqual(got, []string{"task-b", "task-c", "task-d"}) {
+		t.Fatalf("wave-0 tasks = %v, want task-b/task-c/task-d", got)
+	}
+	if got := waves[1].Tasks; !reflect.DeepEqual(got, []string{"task-a"}) {
+		t.Fatalf("wave-1 tasks = %v, want task-a", got)
+	}
+}
+
 func TestComputeWavesPrefersFilesLikelyTouchedOverOwnedPaths(t *testing.T) {
 	const (
 		taskA = "task-a"

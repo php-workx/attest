@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -862,7 +864,10 @@ func parseBoundariesFromTechSpec(data []byte) (state.Boundaries, error) {
 		sawHeading bool
 		current    *[]string
 	)
-	for _, rawLine := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(data)+1)
+	for scanner.Scan() {
+		rawLine := strings.TrimSuffix(scanner.Text(), "\r")
 		line := strings.TrimSpace(rawLine)
 		if !inSection {
 			if line == "## Boundaries" {
@@ -895,6 +900,9 @@ func parseBoundariesFromTechSpec(data []byte) (state.Boundaries, error) {
 			continue
 		}
 		*current = append(*current, item)
+	}
+	if err := scanner.Err(); err != nil {
+		return state.Boundaries{}, fmt.Errorf("scan technical spec boundaries: %w", err)
 	}
 	if !inSection {
 		return state.Boundaries{}, fmt.Errorf("technical spec missing ## Boundaries section")
