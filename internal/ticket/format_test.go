@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -183,8 +184,8 @@ func TestMarshalTicketIncludesValidationSection(t *testing.T) {
 		Paths:   []string{"internal/ticket/format.go"},
 		File:    "internal/ticket/format.go",
 		Pattern: "ValidationChecks",
-		Tool:    "go test",
-		Args:    []string{"./internal/ticket"},
+		Tool:    "go",
+		Args:    []string{"test", "./internal/ticket"},
 	}}
 
 	data, err := MarshalTicket(&task)
@@ -195,7 +196,7 @@ func TestMarshalTicketIncludesValidationSection(t *testing.T) {
 	if !strings.Contains(content, "## Validation") {
 		t.Fatal("missing validation section")
 	}
-	for _, want := range []string{"**command**", "tool=go test", "file=internal/ticket/format.go", "pattern=`ValidationChecks`"} {
+	for _, want := range []string{"**command**", "tool=go", "args=[test, ./internal/ticket]", "file=internal/ticket/format.go", "pattern=`ValidationChecks`"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("missing validation detail %q", want)
 		}
@@ -208,8 +209,32 @@ func TestMarshalTicketIncludesValidationSection(t *testing.T) {
 	if len(got.ValidationChecks) != 1 {
 		t.Fatalf("ValidationChecks len = %d, want 1", len(got.ValidationChecks))
 	}
-	if got.ValidationChecks[0].Tool != "go test" {
-		t.Fatalf("ValidationChecks[0].Tool = %q, want go test", got.ValidationChecks[0].Tool)
+	if got.ValidationChecks[0].Tool != "go" {
+		t.Fatalf("ValidationChecks[0].Tool = %q, want go", got.ValidationChecks[0].Tool)
+	}
+	if !slices.Equal(got.ValidationChecks[0].Args, []string{"test", "./internal/ticket"}) {
+		t.Fatalf("ValidationChecks[0].Args = %q, want go test args", got.ValidationChecks[0].Args)
+	}
+}
+
+func TestMarshalTicketIncludesReadOnlyOnlyScopeSection(t *testing.T) {
+	task := testTask()
+	task.Scope.OwnedPaths = nil
+	task.Scope.ReadOnlyPaths = []string{"docs/specs"}
+
+	data, err := MarshalTicket(&task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "## Scope") {
+		t.Fatal("missing scope section")
+	}
+	if strings.Contains(content, "Owned paths:") {
+		t.Fatalf("unexpected owned paths line in scope section:\n%s", content)
+	}
+	if !strings.Contains(content, "Read-only paths: docs/specs") {
+		t.Fatalf("missing read-only scope line:\n%s", content)
 	}
 }
 

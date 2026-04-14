@@ -260,19 +260,20 @@ func MarshalTicket(task *state.Task) ([]byte, error) {
 }
 
 func appendScopeSection(buf *bytes.Buffer, task *state.Task) {
-	if len(task.Scope.OwnedPaths) == 0 {
+	if len(task.Scope.OwnedPaths) == 0 && len(task.Scope.ReadOnlyPaths) == 0 {
 		return
 	}
 	buf.WriteString("\n## Scope\n\n")
-	buf.WriteString("Owned paths: ")
-	buf.WriteString(strings.Join(task.Scope.OwnedPaths, ", "))
-	buf.WriteString("\n")
-	if len(task.Scope.ReadOnlyPaths) == 0 {
-		return
+	if len(task.Scope.OwnedPaths) > 0 {
+		buf.WriteString("Owned paths: ")
+		buf.WriteString(strings.Join(task.Scope.OwnedPaths, ", "))
+		buf.WriteString("\n")
 	}
-	buf.WriteString("Read-only paths: ")
-	buf.WriteString(strings.Join(task.Scope.ReadOnlyPaths, ", "))
-	buf.WriteString("\n")
+	if len(task.Scope.ReadOnlyPaths) > 0 {
+		buf.WriteString("Read-only paths: ")
+		buf.WriteString(strings.Join(task.Scope.ReadOnlyPaths, ", "))
+		buf.WriteString("\n")
+	}
 }
 
 func appendAcceptanceCriteriaSection(buf *bytes.Buffer, task *state.Task) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -307,14 +308,11 @@ func assertRoundTripPlanningRecords(t *testing.T, runDir *state.RunDir, fixture 
 	if gotExecReview.ExecutionPlanHash != fixture.execReview.ExecutionPlanHash || gotExecReview.Status != state.ReviewPass {
 		t.Fatalf("unexpected execution plan review: %+v", gotExecReview)
 	}
-	if len(gotExecReview.SharedFileRegistry) != len(fixture.execReview.SharedFileRegistry) {
-		t.Fatalf("shared file registry len = %d, want %d", len(gotExecReview.SharedFileRegistry), len(fixture.execReview.SharedFileRegistry))
-	}
-	if len(gotExecReview.Warnings) != len(fixture.execReview.Warnings) {
-		t.Fatalf("warnings len = %d, want %d", len(gotExecReview.Warnings), len(fixture.execReview.Warnings))
-	}
-	if len(gotExecReview.SharedFileRegistry) > 0 && gotExecReview.SharedFileRegistry[0].File != fixture.execReview.SharedFileRegistry[0].File {
+	if !reflect.DeepEqual(gotExecReview.SharedFileRegistry, fixture.execReview.SharedFileRegistry) {
 		t.Fatalf("unexpected shared file registry: %+v", gotExecReview.SharedFileRegistry)
+	}
+	if !reflect.DeepEqual(gotExecReview.Warnings, fixture.execReview.Warnings) {
+		t.Fatalf("unexpected warnings: %+v", gotExecReview.Warnings)
 	}
 
 	gotApproval, err := runDir.ReadExecutionPlanApproval()
