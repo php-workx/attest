@@ -355,13 +355,7 @@ func (s *Store) Link(id, targetID string) error {
 	path := filepath.Join(s.Dir, resolvedID+".md")
 	targetPath := filepath.Join(s.Dir, resolvedTargetID+".md")
 	return s.withLocks([]string{path, targetPath}, func() error {
-		if err := updateTicketLinks(path, resolvedTargetID, appendUniqueLink); err != nil {
-			return err
-		}
-		if targetPath == path {
-			return nil
-		}
-		return updateTicketLinks(targetPath, resolvedID, appendUniqueLink)
+		return updateBidirectionalTicketLinks(path, resolvedTargetID, targetPath, resolvedID, appendUniqueLink)
 	})
 }
 
@@ -379,13 +373,7 @@ func (s *Store) Unlink(id, targetID string) error {
 	path := filepath.Join(s.Dir, resolvedID+".md")
 	targetPath := filepath.Join(s.Dir, resolvedTargetID+".md")
 	return s.withLocks([]string{path, targetPath}, func() error {
-		if err := updateTicketLinks(path, resolvedTargetID, removeLink); err != nil {
-			return err
-		}
-		if targetPath == path {
-			return nil
-		}
-		return updateTicketLinks(targetPath, resolvedID, removeLink)
+		return updateBidirectionalTicketLinks(path, resolvedTargetID, targetPath, resolvedID, removeLink)
 	})
 }
 
@@ -479,28 +467,69 @@ func uniqueSortedPaths(paths []string) []string {
 	return unique
 }
 
-func updateTicketLinks(path, linkID string, mutate func([]string, string) ([]string, bool)) error {
-	data, readErr := os.ReadFile(path)
-	if readErr != nil {
-		return fmt.Errorf(errWrapFmt, ErrTicketNotFound, readErr)
-	}
-	fm, body, err := splitFrontmatterBody(data)
+type ticketLinkUpdate struct {
+	path     string
+	previous []byte
+	updated  []byte
+	changed  bool
+}
+
+func updateBidirectionalTicketLinks(path, linkID, targetPath, targetID string, mutate func([]string, string) ([]string, bool)) error {
+	first, err := prepareTicketLinkUpdate(path, linkID, mutate)
 	if err != nil {
 		return err
 	}
+	if targetPath == path {
+		if !first.changed {
+			return nil
+		}
+		return atomicWrite(first.path, first.updated)
+	}
+	second, err := prepareTicketLinkUpdate(targetPath, targetID, mutate)
+	if err != nil {
+		return err
+	}
+	return applyTicketLinkUpdates(first, second)
+}
+
+func prepareTicketLinkUpdate(path, linkID string, mutate func([]string, string) ([]string, bool)) (ticketLinkUpdate, error) {
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return ticketLinkUpdate{}, fmt.Errorf(errWrapFmt, ErrTicketNotFound, readErr)
+	}
+	fm, body, err := splitFrontmatterBody(data)
+	if err != nil {
+		return ticketLinkUpdate{}, err
+	}
 	links, changed := mutate(fm.Links, linkID)
 	if !changed {
-		return nil
+		return ticketLinkUpdate{path: path, previous: data, changed: false}, nil
 	}
 	fm.Links = links
 	fm.UpdatedAt = formatTime(time.Now())
 
 	updated, err := renderFrontmatterBody(fm, body)
 	if err != nil {
-		return err
+		return ticketLinkUpdate{}, err
 	}
-	if err := atomicWrite(path, updated); err != nil {
-		return err
+	return ticketLinkUpdate{path: path, previous: data, updated: updated, changed: true}, nil
+}
+
+func applyTicketLinkUpdates(updates ...ticketLinkUpdate) error {
+	applied := make([]ticketLinkUpdate, 0, len(updates))
+	for _, update := range updates {
+		if !update.changed {
+			continue
+		}
+		if err := atomicWrite(update.path, update.updated); err != nil {
+			for i := len(applied) - 1; i >= 0; i-- {
+				if rollbackErr := atomicWrite(applied[i].path, applied[i].previous); rollbackErr != nil {
+					return fmt.Errorf("%w (rollback %s: %v)", err, applied[i].path, rollbackErr)
+				}
+			}
+			return err
+		}
+		applied = append(applied, update)
 	}
 	return nil
 }

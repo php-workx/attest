@@ -33,6 +33,7 @@ func testTask() state.Task {
 		DefaultModel:     "sonnet",
 		Status:           state.TaskPending,
 		RequiredEvidence: []string{"quality_gate_pass"},
+		ValidationChecks: []state.ValidationCheck{{Type: "command", Tool: "go", Args: []string{"test", "./..."}}},
 		ImplementationDetail: state.ImplementationDetail{
 			FilesToModify: []state.FileChange{{Path: "internal/auth/service.go", Change: "Add auth service", IsNew: true}},
 			SymbolsToAdd:  []string{"func NewService() *Service"},
@@ -94,6 +95,40 @@ func TestMarshalUnmarshalRoundTrip(t *testing.T) {
 	}
 	if len(got.ImplementationDetail.TestsToAdd) != 1 || got.ImplementationDetail.TestsToAdd[0] != task.ImplementationDetail.TestsToAdd[0] {
 		t.Errorf("TestsToAdd = %v, want %v", got.ImplementationDetail.TestsToAdd, task.ImplementationDetail.TestsToAdd)
+	}
+}
+
+func TestMarshalTicketUsesSnakeCaseForNestedYAML(t *testing.T) {
+	task := testTask()
+
+	data, err := MarshalTicket(&task)
+	if err != nil {
+		t.Fatalf("MarshalTicket: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"validation_checks:",
+		"implementation_detail:",
+		"files_to_modify:",
+		"symbols_to_add:",
+		"symbols_to_use:",
+		"tests_to_add:",
+		"is_new:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ticket YAML missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{
+		"FilesToModify:",
+		"SymbolsToAdd:",
+		"SymbolsToUse:",
+		"TestsToAdd:",
+		"IsNew:",
+	} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("ticket YAML contains Go field name %q:\n%s", bad, got)
+		}
 	}
 }
 

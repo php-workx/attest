@@ -512,6 +512,32 @@ func TestLinkResolvesPartialIDsAndRejectsMissingTarget(t *testing.T) {
 	}
 }
 
+func TestLinkDoesNotPartiallyUpdateWhenTargetPreparationFails(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	taskA := testTask()
+	taskA.TaskID = testTaskA
+	taskB := testTask()
+	taskB.TaskID = testTaskB
+	if err := store.WriteTask(&taskA); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteTask(&taskB); err != nil {
+		t.Fatal(err)
+	}
+	targetPath := filepath.Join(dir, testTaskB+".md")
+	if err := os.WriteFile(targetPath, []byte("not valid ticket frontmatter"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target malformed): %v", err)
+	}
+
+	if err := store.Link(testTaskA, testTaskB); err == nil {
+		t.Fatal("Link with malformed target error = nil, want error")
+	}
+	fmA, _ := readTicketFrontmatter(t, dir, testTaskA)
+	assertStringsEqual(t, fmA.Links, nil)
+}
+
 func TestUnlinkRemovesBidirectionalLinksIdempotently(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

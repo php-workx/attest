@@ -244,10 +244,10 @@ type ReusePoint struct {
 
 // ImplementationDetail captures concrete implementation guidance surfaced during planning.
 type ImplementationDetail struct {
-	FilesToModify []FileChange `json:"files_to_modify,omitempty"`
-	SymbolsToAdd  []string     `json:"symbols_to_add,omitempty"`
-	SymbolsToUse  []string     `json:"symbols_to_use,omitempty"`
-	TestsToAdd    []string     `json:"tests_to_add,omitempty"`
+	FilesToModify []FileChange `json:"files_to_modify,omitempty" yaml:"files_to_modify,omitempty"`
+	SymbolsToAdd  []string     `json:"symbols_to_add,omitempty" yaml:"symbols_to_add,omitempty"`
+	SymbolsToUse  []string     `json:"symbols_to_use,omitempty" yaml:"symbols_to_use,omitempty"`
+	TestsToAdd    []string     `json:"tests_to_add,omitempty" yaml:"tests_to_add,omitempty"`
 }
 
 // IsZero reports whether the detail contains any implementation guidance.
@@ -257,9 +257,9 @@ func (d ImplementationDetail) IsZero() bool {
 
 // FileChange describes one planned file-level modification.
 type FileChange struct {
-	Path   string `json:"path"`
-	Change string `json:"change"`
-	IsNew  bool   `json:"is_new,omitempty"`
+	Path   string `json:"path" yaml:"path"`
+	Change string `json:"change" yaml:"change"`
+	IsNew  bool   `json:"is_new,omitempty" yaml:"is_new,omitempty"`
 }
 
 // Task is a single work item in the task graph (spec section 3.4).
@@ -345,12 +345,12 @@ type LearningRef struct {
 
 // ValidationCheck defines a single validation check for a task (spec §2.4).
 type ValidationCheck struct {
-	Type    string   `json:"type"`              // e.g. "command", "file_exists", "grep"
-	Paths   []string `json:"paths,omitempty"`   // file paths to check
-	File    string   `json:"file,omitempty"`    // single file target
-	Pattern string   `json:"pattern,omitempty"` // regex or glob pattern
-	Tool    string   `json:"tool,omitempty"`    // tool to run (e.g. "go test")
-	Args    []string `json:"args,omitempty"`    // arguments for the tool
+	Type    string   `json:"type" yaml:"type"`                       // e.g. "command", "file_exists", "grep"
+	Paths   []string `json:"paths,omitempty" yaml:"paths,omitempty"` // file paths to check
+	File    string   `json:"file,omitempty" yaml:"file,omitempty"`   // single file target
+	Pattern string   `json:"pattern,omitempty" yaml:"pattern,omitempty"`
+	Tool    string   `json:"tool,omitempty" yaml:"tool,omitempty"` // tool to run (e.g. "go test")
+	Args    []string `json:"args,omitempty" yaml:"args,omitempty"` // arguments for the tool
 }
 
 // TaskScope defines the file-level boundaries for a task (spec section 3.4).
