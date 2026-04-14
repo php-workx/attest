@@ -81,10 +81,11 @@ and **code review**.
 
 ---
 
-## Scope: Three Workflows, Eight Tools
+## Scope: Three Workflows, Eight Required Tools
 
-omp defines 44 tools. For plan/implement/review, you need **8 core tools** plus
-**2 review-specific tools**:
+omp defines 44 tools. For plan/implement/review, you need **8 required tools** plus
+**2 optional recommended tools**. The required set is 6 core tools plus 2
+review-specific tools:
 
 ### Core Tools (all workflows)
 

@@ -19,7 +19,7 @@ Focus areas:
 
 3. BOUNDARY TIMING: Never boundaries are validated during verification, AFTER the work is done. A worker could modify out-of-scope files and the violation is only caught post-hoc. Should the boundary check happen earlier — at task dispatch time, checking OwnedPaths against Never paths?
 
-4. VALIDATION CHECK INJECTION: ValidationCheck.Command contains a shell command string. If the command is derived from requirement text or exploration results (which come from LLM output), this is a command injection vector. Is the Command field sanitized? Or is it only derived from trusted sources (quality gate config, hardcoded patterns)?
+4. VALIDATION CHECK INJECTION: ValidationCheck uses Tool + Args rather than a shell command string. Review whether Tool is restricted to a trusted allowlist, Args are treated as argv without shell interpolation, and both fields are sourced only from trusted config or deterministic planning rather than raw requirement text or LLM exploration output.
 
 5. EXPLORATION RESULT PERSISTENCE: The ExplorationResult is persisted to <run-dir>/exploration.json. This file contains the full symbol inventory of the project — function signatures, file paths, test names. If the run directory is committed to git or shared in CI, this leaks internal architecture. Is .fabrikk/ in .gitignore?
 

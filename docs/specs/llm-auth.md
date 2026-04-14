@@ -222,10 +222,9 @@ func DefaultDBPath() (string, error) {
     return filepath.Join(base, "auth.db"), nil
 }
 
-// VerifyDBPermissions checks the database file is owned by the current user
-// and has mode 0600. Call this on every Open() — refuse to use a database
-// with overly-permissive permissions, since another user could have read/written
-// the credentials.
+// VerifyDBPermissions checks the database file has mode 0600. Call this on
+// every Open() — refuse to use a database with overly-permissive permissions,
+// since another user could have read/written the credentials.
 func VerifyDBPermissions(path string) error {
     info, err := os.Stat(path)
     if err != nil {
@@ -241,6 +240,12 @@ func VerifyDBPermissions(path string) error {
     return nil
 }
 ```
+
+On platforms that expose file ownership, also verify that the database file is
+owned by the current user before opening it. For example, Unix implementations
+can inspect `info.Sys().(*syscall.Stat_t)` and compare `Uid` to `os.Geteuid()`;
+non-Unix implementations must use the platform equivalent or document the
+ownership-check limitation.
 
 **Opening the SQLite database** must use `O_CREATE|O_RDWR` with mode `0600` so the
 file is created with the right permissions on first run:
@@ -267,8 +272,10 @@ func openDB(path string) (*sql.DB, error) {
 > **Note on WAL files:** SQLite in WAL mode creates `auth.db-wal` and `auth.db-shm`
 > alongside the main database. These contain copies of in-flight transactions,
 > including credentials. Make sure they inherit the `0600` mode. Setting the umask
-> to `0o077` for the goroutine performing database operations is the safest way to
-> guarantee this for all SQLite-created files.
+> to `0o077` must be done once at process startup before opening SQLite, because
+> umask is process-wide rather than goroutine-scoped. If the process cannot own
+> the umask globally, explicitly chmod `auth.db-wal` and `auth.db-shm` after SQLite
+> creates them and before continuing credential operations.
 
 **Concurrent access:** Multiple fabrikk-aware tools may open the database
 simultaneously. SQLite's WAL mode supports concurrent readers + one writer, which
@@ -942,7 +949,7 @@ The access token is a JWT. omp decodes it to extract:
 - `https://api.openai.com/auth` → `chatgpt_account_id`
 - `https://api.openai.com/profile` → `email`
 
-The `accountId` is required for Codex API calls (sent as `OpenAI-Organization` header).
+The `accountId` is required for Codex API calls (sent as the `chatgpt-account-id` header).
 
 ---
 
@@ -960,7 +967,7 @@ Google has three separate authentication paths:
 **Auth pattern:** OAuth 2.0 + PKCE with client secret (Pattern B)
 
 **OAuth details:**
-- Client ID: `<github-copilot-oauth-client-id>`
+- Client ID: `<google-oauth-client-id>`
 - Client secret: `<google-oauth-client-secret>`
 - Scopes: `cloud-platform`, `userinfo.email`, `userinfo.profile`
 - Authorize URL: `https://accounts.google.com/o/oauth2/v2/auth`
@@ -1078,7 +1085,7 @@ Requires `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`.
 **Auth pattern:** Device Code Flow (Pattern C)
 
 **OAuth details:**
-- Client ID: `<google-oauth-client-id>`
+- Client ID: `<github-copilot-oauth-client-id>`
 - Flow: GitHub Device Authorization (RFC 8628)
 - Scope: `read:user`
 - Device code URL: `https://github.com/login/device/code`

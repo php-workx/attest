@@ -11,7 +11,7 @@ Review this spec-decomposition plan ONLY for LLM prompt design and integration q
 
 Focus areas:
 
-1. PROMPT SIZE: Structural analysis JSON for 200 functions is ~15KB. With requirements + instructions + output schema, the prompt could be 25-30KB. The plan says "truncate to top 100 functions by semantic relevance" for large projects — but who computes semantic relevance to requirements? That's the LLM's job. You can't pre-filter without the LLM.
+1. PROMPT SIZE: Structural analysis JSON for 200 functions is ~15KB. With requirements + instructions + output schema, the prompt could be 25-30KB. The plan scores structural entries with keyword overlap against requirement text plus call-graph centrality, then truncates high-volume results before prompting. Review whether that deterministic prefilter can discard files whose names do not share obvious requirement terms.
 
 2. OUTPUT RELIABILITY: ExplorationResult asks for Relevance (free text), Language (string), IsNew (boolean inference). These are where LLMs hallucinate most. How is the result validated? Can the verifier check that referenced symbols exist at claimed lines? What happens when the LLM returns a function signature that doesn't match reality?
 
