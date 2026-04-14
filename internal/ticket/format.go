@@ -424,6 +424,10 @@ func UpdateFrontmatter(existingData []byte, task *state.Task) ([]byte, error) {
 		fm.ClaimHeartbeat = existingFM.ClaimHeartbeat
 	}
 
+	return renderFrontmatterBody(fm, body)
+}
+
+func renderFrontmatterBody(fm *Frontmatter, body string) ([]byte, error) {
 	yamlData, err := yaml.Marshal(fm)
 	if err != nil {
 		return nil, fmt.Errorf("marshal frontmatter: %w", err)
