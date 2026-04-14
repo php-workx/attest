@@ -22,6 +22,18 @@ type DaemonConfig struct {
 	SocketDir   string        // default: os.TempDir()
 	RunID       string        // used in socket filename
 	IdleTimeout time.Duration // default: 30m
+
+	// ContextFreshnessThreshold is the number of queries after which the daemon
+	// warns that the Claude process context may be degraded. Zero uses the
+	// default of 20. The counter resets whenever the Claude process is
+	// (re)started, so it tracks queries on the current process, not the daemon
+	// lifetime.
+	ContextFreshnessThreshold int
+
+	// RestartOnThreshold restarts the Claude subprocess instead of logging a
+	// warning when the freshness threshold is reached. The query counter resets
+	// after each successful restart. Default false (warn only).
+	RestartOnThreshold bool
 }
 
 // Daemon manages a persistent Claude process for a single run.
@@ -31,8 +43,10 @@ type Daemon struct {
 	listener     net.Listener
 	sockPath     string
 	pidPath      string
-	mu           sync.Mutex // protects needsRestart, process, listener, and restart operations
+	log          io.Writer  // destination for daemon-level messages; defaults to os.Stderr
+	mu           sync.Mutex // protects needsRestart, queryCount, process, listener, and restart operations
 	needsRestart bool
+	queryCount   int // queries completed on the current Claude process; reset on restart
 	stopOnce     sync.Once
 	stopCh       chan struct{} // closed by Stop to signal background goroutines
 }
@@ -45,12 +59,24 @@ func NewDaemon(cfg DaemonConfig) *Daemon {
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 30 * time.Minute
 	}
+	if cfg.ContextFreshnessThreshold == 0 {
+		cfg.ContextFreshnessThreshold = 20
+	}
 	return &Daemon{
 		config:   cfg,
+		log:      os.Stderr,
 		sockPath: filepath.Join(cfg.SocketDir, fmt.Sprintf("fabrikk-%s.sock", cfg.RunID)),
 		pidPath:  filepath.Join(cfg.SocketDir, fmt.Sprintf("fabrikk-%s.pid", cfg.RunID)),
 		stopCh:   make(chan struct{}),
 	}
+}
+
+func (d *Daemon) logf(format string, args ...any) {
+	_, _ = fmt.Fprintf(d.log, format, args...)
+}
+
+func (d *Daemon) logln(args ...any) {
+	_, _ = fmt.Fprintln(d.log, args...)
 }
 
 // SocketPath returns the Unix socket path for this daemon.
@@ -268,7 +294,7 @@ func (d *Daemon) Query(ctx context.Context, prompt string) (string, error) {
 		d.needsRestart = false
 		// Hold the lock during restart so concurrent callers wait rather than
 		// hitting the dead socket.
-		restartErr := d.restartLocked(ctx)
+		restartErr := d.restartLocked(ctx, "crash detected")
 		if restartErr != nil {
 			d.needsRestart = true
 			d.mu.Unlock()
@@ -288,6 +314,30 @@ func (d *Daemon) Query(ctx context.Context, prompt string) (string, error) {
 		d.mu.Unlock()
 		return "", err
 	}
+
+	// Track context freshness. Warn (or restart) at the configured threshold,
+	// then again every 10 queries after that.
+	d.mu.Lock()
+	d.queryCount++
+	count := d.queryCount
+	threshold := d.config.ContextFreshnessThreshold
+	atThreshold := count == threshold || (count > threshold && (count-threshold)%10 == 0)
+	if atThreshold && d.config.RestartOnThreshold {
+		restartErr := d.restartLocked(ctx, "context freshness threshold reached")
+		d.mu.Unlock()
+		if restartErr != nil {
+			d.logf("  daemon: threshold restart failed: %v\n", restartErr)
+		}
+		return result, nil
+	}
+	d.mu.Unlock()
+
+	if atThreshold {
+		d.logf(
+			"  daemon: context freshness warning — %d queries on this Claude process (threshold: %d); restart to avoid context degradation\n",
+			count, threshold)
+	}
+
 	return result, nil
 }
 
@@ -327,18 +377,20 @@ func (d *Daemon) queryViaSocket(ctx context.Context, prompt string) (string, err
 
 // restartLocked stops and re-starts the daemon. Caller must hold d.mu.
 // The lock is temporarily released during Stop/Start to allow those methods
-// to acquire it internally, then re-acquired before return.
-func (d *Daemon) restartLocked(ctx context.Context) error {
+// to acquire it internally, then re-acquired before return. On success,
+// queryCount is reset because the new Claude process starts with fresh context.
+func (d *Daemon) restartLocked(ctx context.Context, reason string) error {
 	d.mu.Unlock() // release for Stop/Start which may lock internally
-	fmt.Fprintln(os.Stderr, "  daemon: crash detected, restarting...")
+	d.logf("  daemon: %s, restarting...\n", reason)
 	_ = d.Stop()
 	err := d.Start(ctx)
 	d.mu.Lock() // re-acquire before returning to caller
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  daemon: restart failed: %v\n", err)
+		d.logf("  daemon: restart failed: %v\n", err)
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "  daemon: restarted successfully (context from prior queries lost)")
+	d.queryCount = 0 // new Claude process has fresh context
+	d.logln("  daemon: restarted successfully (context from prior queries lost)")
 	return nil
 }
 
@@ -366,7 +418,7 @@ func (d *Daemon) QueryFunc() InvokeFn {
 			return result, nil
 		}
 		// Daemon failed — fall back to one-shot and log.
-		fmt.Fprintf(os.Stderr, "  daemon query failed (falling back to one-shot): %v\n", err)
+		d.logf("  daemon query failed (falling back to one-shot): %v\n", err)
 		return InvokeFunc(ctx, backend, prompt, timeoutSec)
 	}
 }
