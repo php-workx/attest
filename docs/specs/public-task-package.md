@@ -30,7 +30,7 @@ These types are stored in `.tickets/` files and must be accessible to public con
 | `ValidationCheck` struct | `internal/state/types.go` | referenced by `Task.ValidationChecks` |
 | `ImplementationDetail` struct + `IsZero()` method | `internal/state/types.go` | method must move with its receiver |
 | `FileChange` struct | `internal/state/types.go` | referenced by `ImplementationDetail.FilesToModify` |
-| `ErrPartialRead` | `internal/state/types.go` line 13 | |
+| `ErrPartialRead` | `internal/state/types.go` line 13 | move to `ticket/errors.go`, not `ticket/types.go` |
 
 ### Stay in `internal/state`
 
@@ -68,9 +68,8 @@ Create a new file `ticket/types.go` in package `ticket`. Cut the following from 
 - `TaskScope` struct (lines 357–362)
 - `TaskStatus` type + 9 constants (lines 364–378)
 - `Claim` struct (lines 381–390)
-- `ErrPartialRead` variable (line 13)
 
-Add the imports that `ticket/types.go` needs: `"errors"`, `"sort"`, `"strings"`, `"time"`.
+Add the imports that `ticket/types.go` needs: `"sort"`, `"strings"`, `"time"`.
 
 Add `ErrPartialRead` to the existing `ticket/errors.go` (it already contains the 9 store-specific sentinels — this is an addition to that file, not a new file):
 
@@ -96,6 +95,19 @@ find ticket/ -name "*.go" | xargs sed -i '' \
   -e 's/state\.Claim\b/Claim/g' \
   -e 's/state\.TaskStore\b/TaskStore/g' \
   -e 's/state\.ClaimableStore\b/ClaimableStore/g' \
+  -e 's/state\.LearningRef\b/LearningRef/g' \
+  -e 's/state\.ValidationCheck\b/ValidationCheck/g' \
+  -e 's/state\.ImplementationDetail\b/ImplementationDetail/g' \
+  -e 's/state\.FileChange\b/FileChange/g' \
+  -e 's/state\.TaskPending\b/TaskPending/g' \
+  -e 's/state\.TaskClaimed\b/TaskClaimed/g' \
+  -e 's/state\.TaskImplementing\b/TaskImplementing/g' \
+  -e 's/state\.TaskVerifying\b/TaskVerifying/g' \
+  -e 's/state\.TaskUnderReview\b/TaskUnderReview/g' \
+  -e 's/state\.TaskRepairPending\b/TaskRepairPending/g' \
+  -e 's/state\.TaskBlocked\b/TaskBlocked/g' \
+  -e 's/state\.TaskDone\b/TaskDone/g' \
+  -e 's/state\.TaskFailed\b/TaskFailed/g' \
   -e 's/state\.ErrPartialRead\b/ErrPartialRead/g'
 ```
 

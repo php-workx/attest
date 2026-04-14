@@ -59,7 +59,7 @@ func NewDaemon(cfg DaemonConfig) *Daemon {
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 30 * time.Minute
 	}
-	if cfg.ContextFreshnessThreshold == 0 {
+	if cfg.ContextFreshnessThreshold <= 0 {
 		cfg.ContextFreshnessThreshold = 20
 	}
 	return &Daemon{
@@ -178,6 +178,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	d.listener = ln
 	d.stopOnce = sync.Once{} // reset for restart
 	d.stopCh = make(chan struct{})
+	d.queryCount = 0
 	d.mu.Unlock()
 
 	var activityMu sync.Mutex
@@ -380,8 +381,8 @@ func (d *Daemon) queryViaSocket(ctx context.Context, prompt string) (string, err
 
 // restartLocked stops and re-starts the daemon. Caller must hold d.mu.
 // The lock is temporarily released during Stop/Start to allow those methods
-// to acquire it internally, then re-acquired before return. On success,
-// queryCount is reset because the new Claude process starts with fresh context.
+// to acquire it internally, then re-acquired before return. On success, Start
+// resets queryCount because the new Claude process starts with fresh context.
 func (d *Daemon) restartLocked(ctx context.Context, reason string) error {
 	d.mu.Unlock() // release for Stop/Start which may lock internally
 	d.logf("  daemon: %s, restarting...\n", reason)
@@ -392,7 +393,6 @@ func (d *Daemon) restartLocked(ctx context.Context, reason string) error {
 		d.logf("  daemon: restart failed: %v\n", err)
 		return err
 	}
-	d.queryCount = 0 // new Claude process has fresh context
 	d.logln("  daemon: restarted successfully (context from prior queries lost)")
 	return nil
 }

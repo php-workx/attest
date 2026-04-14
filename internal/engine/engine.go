@@ -319,7 +319,7 @@ func (e *Engine) applyNeverBoundaryWarnings(result *state.VerifierResult, artifa
 		return
 	}
 	for _, boundary := range boundaries {
-		if boundary == state.EmptyBoundaryItem {
+		if state.IsEmptyBoundaryItem(boundary) {
 			result.NonBlockingFindings = append(result.NonBlockingFindings, state.Finding{
 				FindingID: fmt.Sprintf("%s-boundary-never-empty", result.TaskID),
 				Severity:  "low",
@@ -329,6 +329,7 @@ func (e *Engine) applyNeverBoundaryWarnings(result *state.VerifierResult, artifa
 			})
 			continue
 		}
+		boundary = state.BoundaryItemValue(boundary)
 		violations := boundaryViolations(report.ChangedFiles, boundary, e.WorkDir)
 		if len(violations) == 0 {
 			continue

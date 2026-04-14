@@ -20,7 +20,7 @@ and **code review**.
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
-- [Scope: Three Workflows, Eight Tools](#scope-three-workflows-eight-tools)
+- [Scope: Three Workflows, Eight Required Tools](#scope-three-workflows-eight-required-tools)
 - [Core Types](#core-types)
 - [Tool Definitions](#tool-definitions)
 - [Agent Definitions](#agent-definitions)
@@ -656,7 +656,7 @@ syntheticResult := ToolResultMessage{
     Role:       "toolResult",
     ToolCallID: orphanedCall.ID,
     ToolName:   orphanedCall.Name,
-    Content:    []TextContent{{Type: "text", Text: "No result provided"}},
+    Content:    []interface{}{TextContent{Type: "text", Text: "No result provided"}},
     IsError:    true,
 }
 ```

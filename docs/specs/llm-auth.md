@@ -135,9 +135,14 @@ The system has three layers:
 2. **Model Manager** — discovers available models per provider, maps provider IDs to
    API types and base URLs
 3. **Stream Dispatch** — routes requests to provider-specific streaming implementations
-   based on `model.api` field
+   based on the `model.api` field and Model Manager mappings
 
-All LLM calls go through **HTTP streaming APIs** (SSE). No provider CLIs are shelled out to.
+Stream Dispatch must abstract over provider-specific streaming transports rather
+than assuming one protocol. Supported transports include HTTP streaming/SSE,
+WebSockets, gRPC, and other provider protocols selected by the `model.api`
+mapping. Known exceptions called out elsewhere in this spec include Codex
+WebSocket support and Cursor's custom gRPC protocol. No provider CLIs are
+shelled out to.
 
 ---
 
@@ -1417,12 +1422,16 @@ Transport: SSE
 ```
 API type: "openai-responses" or "openai-completions"
 SDK: openai
-Method: same as standard OpenAI
-Endpoint: POST {customBaseUrl}/v1/chat/completions
-Transport: SSE
+Method: Responses API SDK method for "openai-responses"; Chat Completions SDK method for "openai-completions"
+Endpoint: POST {customBaseUrl}/v1/responses for "openai-responses"
+Endpoint: POST {customBaseUrl}/v1/chat/completions for "openai-completions"
+Transport: SDK-managed HTTP streaming/SSE for the selected API type
 ```
 
 These providers use the standard OpenAI SDK pointed at a custom `baseURL`.
+Ollama-compatible implementations must map to the endpoint for the API type they
+actually implement: `/v1/chat/completions` for `openai-completions`, or
+`/v1/responses` only when the provider explicitly supports Responses semantics.
 
 ---
 

@@ -100,6 +100,18 @@ func fixtureDaemonConfig(t *testing.T) DaemonConfig {
 	}
 }
 
+func TestNewDaemonDefaultsNonPositiveFreshnessThreshold(t *testing.T) {
+	for _, threshold := range []int{0, -1} {
+		cfg := fixtureDaemonConfig(t)
+		cfg.ContextFreshnessThreshold = threshold
+		d := NewDaemon(cfg)
+
+		if got, want := d.config.ContextFreshnessThreshold, 20; got != want {
+			t.Fatalf("ContextFreshnessThreshold for %d = %d, want %d", threshold, got, want)
+		}
+	}
+}
+
 func TestDaemon_StartStop(t *testing.T) {
 	t.Setenv("FABRIKK_TEST_CLAUDE_FIXTURE", "1")
 
@@ -133,6 +145,29 @@ func TestDaemon_StartStop(t *testing.T) {
 	}
 	if _, err := os.Stat(d.pidPath); !os.IsNotExist(err) {
 		t.Errorf("pid file should be removed after Stop, got err: %v", err)
+	}
+}
+
+func TestDaemon_StartResetsQueryCount(t *testing.T) {
+	t.Setenv("FABRIKK_TEST_CLAUDE_FIXTURE", "1")
+
+	cfg := fixtureDaemonConfig(t)
+	d := NewDaemon(cfg)
+	d.queryCount = 7
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	d.mu.Lock()
+	got := d.queryCount
+	d.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("queryCount after Start = %d, want 0", got)
 	}
 }
 

@@ -73,9 +73,25 @@ type Boundaries struct {
 }
 
 // EmptyBoundaryItem preserves an explicitly blank boundary entry instead of silently dropping it.
-const EmptyBoundaryItem = "(empty boundary item)"
+// It is an internal marker, not a user-facing display value.
+const EmptyBoundaryItem = "\x00fabrikk-boundary-empty"
 
-// Normalized returns trimmed boundary items while preserving user-visible empty entries.
+const boundaryEscapePrefix = "\x00fabrikk-boundary-escaped:"
+
+// IsEmptyBoundaryItem reports whether item is the internal marker for an
+// explicitly blank boundary item.
+func IsEmptyBoundaryItem(item string) bool {
+	return item == EmptyBoundaryItem
+}
+
+// BoundaryItemValue decodes an escaped normalized boundary item back to the
+// original user value. Empty boundary markers remain encoded so callers can
+// handle them explicitly via IsEmptyBoundaryItem.
+func BoundaryItemValue(item string) string {
+	return strings.TrimPrefix(item, boundaryEscapePrefix)
+}
+
+// Normalized returns trimmed boundary items while preserving explicitly empty entries.
 func (b Boundaries) Normalized() Boundaries {
 	return Boundaries{
 		Always:   normalizeBoundaryItems(b.Always),
@@ -91,6 +107,8 @@ func normalizeBoundaryItems(items []string) []string {
 		normalized := strings.TrimSpace(item)
 		if normalized == "" {
 			normalized = EmptyBoundaryItem
+		} else if normalized == EmptyBoundaryItem || strings.HasPrefix(normalized, boundaryEscapePrefix) {
+			normalized = boundaryEscapePrefix + normalized
 		}
 		if _, ok := seen[normalized]; ok {
 			continue
