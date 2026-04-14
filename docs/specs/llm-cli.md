@@ -706,7 +706,7 @@ events as the model generates each content block, and `result` only at the end.
 | `{"type":"system","subtype":"init"}` | Session started, model + tools listed | `start` (capture `session_id`) |
 | `{"type":"assistant","message":{content:[{type:"text",...}]}}` | Text content block from the model | `text_start` + `text_delta` + `text_end` (or single `text_delta`) |
 | `{"type":"assistant","message":{content:[{type:"thinking",...}]}}` | Thinking/reasoning block | `thinking_start` + `thinking_delta` + `thinking_end` |
-| `{"type":"assistant","message":{content:[{type:"tool_use",...}]}}` | Tool call from the model | `toolcall_end` (with parsed `ToolCall`) |
+| `{"type":"assistant","message":{content:[{type:"tool_use",...}]}}` | Tool call from the model | `toolcall_start` + `toolcall_end` (block-level; Claude delivers complete argument JSON — no delta) |
 | `{"type":"user","message":{content:[{type:"tool_result",...}]}}` | Tool execution result (Claude executes its own tools) | (informational; surface in UI but not in event stream) |
 | `{"type":"result","subtype":"success",...}` | Turn complete | `done` (with usage from `total_cost_usd`, `duration_ms`) |
 | `{"type":"result","subtype":"error_max_turns"}` | Hit max turn limit | `error` |
@@ -1873,7 +1873,10 @@ See the full event mapping table in the [Claude Code CLI](#claude-code-cli) sect
 above. Each JSONL line is parsed immediately. A single upstream JSONL object may
 expand into multiple normalized events when needed to satisfy
 `*_start`/`*_delta`/`*_end` sequencing. For example, a complete Claude text block
-expands into `text_start`, one full-block `text_delta`, and `text_end`.
+expands into `text_start`, one full-block `text_delta`, and `text_end`. Similarly,
+a complete `tool_use` block expands into `toolcall_start` + `toolcall_end` with no
+intervening `toolcall_delta`, because Claude delivers the full argument JSON in a
+single block rather than streaming it character-by-character.
 
 ### omp `--mode json` → events
 
@@ -2325,16 +2328,26 @@ A turn that produces "Hello" → tool call Read("/tmp/foo") → "Done":
 ### Claude block-level streaming caveat
 
 Since Claude Code emits each content block as a complete unit (not character-by-character),
-the sequence collapses to a single delta per block:
+the sequence collapses to a single delta per block for text and thinking, and to
+a start/end pair with no delta for tool calls:
 
+**Text and thinking blocks** (one delta carrying the full block content):
 ```jsonl
 {"type":"text_start","contentIndex":0}
 {"type":"text_delta","contentIndex":0,"delta":"<full block text>"}
 {"type":"text_end","contentIndex":0,"content":"<full block text>"}
 ```
 
+**Tool call blocks** (no delta — Claude delivers complete argument JSON in one shot):
+```jsonl
+{"type":"toolcall_start","contentIndex":1}
+{"type":"toolcall_end","contentIndex":1,"toolCall":{"id":"toolu_01","name":"Read","arguments":{"path":"/tmp/foo.txt"}}}
+```
+
 This is still real-time (each block arrives as it completes), but there's no
-character-by-character streaming within a block.
+character-by-character streaming within a block. Consumers that require
+`toolcall_delta` events for partial-argument rendering must use a backend with
+true incremental argument streaming (such as the HTTP API via `llmclient`).
 
 ### Consumer simplification
 
@@ -2946,7 +2959,7 @@ func (c *CliInfo) MeetsMinimum() bool {
 
 - [ ] Argument builder (`-p`, `--system-prompt`, `--model`, `--output-format stream-json`, `--resume`)
 - [ ] stream-json parser (JSONL, one event per line)
-- [ ] Event mapping (system→start, assistant→text_delta, tool_use→toolcall, result→done)
+- [ ] Event mapping: system→`start`, assistant text→`text_start`+`text_delta`+`text_end`, thinking→`thinking_start`+`thinking_delta`+`thinking_end`, tool_use→`toolcall_start`+`toolcall_end` (no delta for Claude), result→`done`
 - [ ] Session ID capture and storage for `--resume`
 - [ ] Stdin piping for long prompts
 
