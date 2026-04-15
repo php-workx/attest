@@ -303,7 +303,7 @@ type Task struct {
 	StatusReason         string               `json:"status_reason,omitempty"`
 	RequiredEvidence     []string             `json:"required_evidence"`
 	ValidationChecks     []ValidationCheck    `json:"validation_checks,omitempty"`
-	ImplementationDetail ImplementationDetail `json:"implementation_detail,omitempty"`
+	ImplementationDetail ImplementationDetail `json:"implementation_detail,omitzero"`
 	ParentTaskID         string               `json:"parent_task_id,omitempty"`
 	CreatedFrom          string               `json:"created_from,omitempty"`
 
@@ -585,7 +585,10 @@ type TechnicalSpecReview struct {
 	ReviewedAt        time.Time       `json:"reviewed_at"`
 }
 
-// Wave groups tasks that can execute in parallel at the same dependency depth.
+// Wave is a conflict-free execution batch produced by the scheduler. The initial
+// grouping is by dependency depth, but compiler.ComputeWaves shifts tasks whose
+// file scopes collide into later waves, so the Tasks in a Wave are guaranteed to
+// be safe to dispatch in parallel.
 type Wave struct {
 	WaveID string   `json:"wave_id"`
 	Tasks  []string `json:"tasks"`
@@ -618,7 +621,7 @@ type ExecutionSlice struct {
 	OwnedPaths           []string             `json:"owned_paths,omitempty"`
 	AcceptanceChecks     []string             `json:"acceptance_checks,omitempty"`
 	ValidationChecks     []ValidationCheck    `json:"validation_checks,omitempty"`
-	ImplementationDetail ImplementationDetail `json:"implementation_detail,omitempty"`
+	ImplementationDetail ImplementationDetail `json:"implementation_detail,omitzero"`
 	Risk                 string               `json:"risk"`
 	Size                 string               `json:"size"`
 	Notes                string               `json:"notes,omitempty"`
