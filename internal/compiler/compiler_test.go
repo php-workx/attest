@@ -600,6 +600,54 @@ func TestCompileExecutionPlanPreservesReviewedValidationChecksAndWaveBarriers(t 
 	}
 }
 
+func TestCompileExecutionPlanPreservesWaveBarriersWhenSlicesOutOfOrder(t *testing.T) {
+	artifact := &state.RunArtifact{
+		RunID:        "run-wave-barrier-out-of-order",
+		Requirements: []state.Requirement{{ID: "AT-FR-001", Text: "First"}, {ID: "AT-FR-002", Text: "Second"}},
+	}
+	plan := &state.ExecutionPlan{
+		Slices: []state.ExecutionSlice{
+			{
+				SliceID:        "slice-2",
+				Title:          "Slice two",
+				Goal:           "Second wave",
+				RequirementIDs: []string{"AT-FR-002"},
+				WaveID:         "wave-1",
+				OwnedPaths:     []string{"internal/engine"},
+				Risk:           "low",
+				Size:           "S",
+			},
+			{
+				SliceID:        "slice-1",
+				Title:          "Slice one",
+				Goal:           "First wave",
+				RequirementIDs: []string{"AT-FR-001"},
+				WaveID:         "wave-0",
+				OwnedPaths:     []string{"internal/compiler"},
+				Risk:           "low",
+				Size:           "S",
+			},
+		},
+	}
+
+	result, err := compiler.CompileExecutionPlan(artifact, plan)
+	if err != nil {
+		t.Fatalf("CompileExecutionPlan: %v", err)
+	}
+	tasksByID := make(map[string]state.Task, len(result.Tasks))
+	for _, task := range result.Tasks {
+		tasksByID[task.TaskID] = task
+	}
+	waveOneTask := tasksByID["task-slice-2"]
+	waveZeroTask := tasksByID["task-slice-1"]
+	if !reflect.DeepEqual(waveOneTask.DependsOn, []string{waveZeroTask.TaskID}) {
+		t.Fatalf("wave-1 DependsOn = %v, want [%s]", waveOneTask.DependsOn, waveZeroTask.TaskID)
+	}
+	if len(waveZeroTask.DependsOn) != 0 {
+		t.Fatalf("wave-0 DependsOn = %v, want none", waveZeroTask.DependsOn)
+	}
+}
+
 func TestDeriveValidationChecksRejectsShellFormQualityGate(t *testing.T) {
 	artifact := &state.RunArtifact{QualityGate: &state.QualityGate{Command: `make check && go test ./...`, Required: true}}
 	checks := compiler.DeriveValidationChecks(artifact, &state.ExecutionSlice{SliceID: "slice-1"})

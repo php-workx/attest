@@ -1031,7 +1031,10 @@ func waveBarrierTaskIDs(slices []state.ExecutionSlice, index int) []string {
 	}
 	previousWave := currentWave - 1
 	barrier := make([]string, 0, len(slices))
-	for i := 0; i < index; i++ {
+	for i := range slices {
+		if i == index {
+			continue
+		}
 		wave, ok := waveIndex(slices[i].WaveID)
 		if !ok || wave != previousWave {
 			continue
