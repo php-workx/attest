@@ -20,6 +20,7 @@ import (
 	"github.com/php-workx/fabrikk/internal/engine"
 	"github.com/php-workx/fabrikk/internal/learning"
 	"github.com/php-workx/fabrikk/internal/state"
+	"gopkg.in/yaml.v3"
 )
 
 // Build-time variables set via ldflags by goreleaser / justfile.
@@ -34,6 +35,7 @@ const (
 	commandReview     = "review"
 	commandApprove    = "approve"
 	commandBoundaries = "boundaries"
+	consentSourceCLI  = "cli"
 
 	fabrikDir            = ".fabrikk"
 	flagFrom             = "--from"
@@ -91,6 +93,7 @@ func dispatchRunCommand(ctx context.Context, args []string) error {
 	handlers := map[string]func([]string) error{
 		"prepare":         func(rest []string) error { return cmdPrepare(ctx, rest) },
 		commandReview:     func(rest []string) error { return cmdReview(ctx, rest) },
+		"artifact":        func(rest []string) error { return cmdArtifact(ctx, rest) },
 		"tech-spec":       func(rest []string) error { return cmdTechSpec(ctx, rest) },
 		"plan":            func(rest []string) error { return cmdPlan(ctx, rest) },
 		commandBoundaries: cmdBoundaries,
@@ -154,40 +157,191 @@ func workDir() (string, error) {
 }
 
 func cmdPrepare(ctx context.Context, args []string) error {
-	var specPaths []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--spec" && i+1 < len(args) {
-			specPaths = append(specPaths, args[i+1])
-			i++
-		}
-	}
-	if len(specPaths) == 0 {
-		return fmt.Errorf("usage: fabrikk prepare --spec <path> [--spec <path>...]")
+	flags, err := parsePrepareFlags(args)
+	if err != nil {
+		return err
 	}
 
 	wd, err := workDir()
 	if err != nil {
 		return err
 	}
+	if err := applyTrustedPrepareConfig(wd, &flags); err != nil {
+		return err
+	}
+	if err := validatePrepareFlags(flags); err != nil {
+		return err
+	}
 
 	runDir := state.NewRunDir(wd, "placeholder")
 	eng := engine.New(runDir, wd)
 
-	artifact, err := eng.Prepare(ctx, specPaths)
+	result, err := eng.PrepareWithOptions(ctx, flags.specPaths, flags.options)
 	if err != nil {
 		return err
 	}
+	if result == nil || result.Artifact == nil {
+		nextAction := "prepare did not produce a run artifact"
+		if result != nil && result.NextAction != "" {
+			nextAction = result.NextAction
+		}
+		return fmt.Errorf("%s", nextAction)
+	}
+	artifact := result.Artifact
 
 	fmt.Printf("Run prepared: %s\n", artifact.RunID)
 	fmt.Printf("Requirements: %d\n", len(artifact.Requirements))
 	fmt.Printf("Source specs: %d\n", len(artifact.SourceSpecs))
+	printPrepareNormalizationSummary(result)
+	if result.NormalizationReview != nil {
+		fmt.Printf("Normalization review: %s\n", result.NormalizationReview.Status)
+		fmt.Printf("Blocking findings: %d\n", len(result.NormalizationReview.BlockingFindings))
+	}
 	if artifact.QualityGate != nil {
 		fmt.Printf("Quality gate: %s\n", artifact.QualityGate.Command)
 	}
 	fmt.Printf("\nRun directory: .fabrikk/runs/%s/\n", artifact.RunID)
-	fmt.Printf("Next: fabrikk review %s\n", artifact.RunID)
+	fmt.Printf("Next: %s\n", prepareNextAction(result))
 
 	return nil
+}
+
+func printPrepareNormalizationSummary(result *engine.PrepareResult) {
+	if result == nil || result.Artifact == nil {
+		return
+	}
+	metadata := result.Artifact.Normalization
+	switch {
+	case metadata.FallbackDeterministic:
+		fmt.Printf("Normalization: deterministic fallback mode=%s\n", metadata.Mode)
+		fmt.Println("Warning: deterministic fallback was used")
+	case metadata.UsedLLM:
+		fmt.Printf("Normalization: llm mode=%s converter=%s verifier=%s\n", metadata.Mode, metadata.ConverterBackend, metadata.VerifierBackend)
+	case metadata.UsedDeterministic:
+		fmt.Printf("Normalization: deterministic mode=%s\n", metadata.Mode)
+	}
+}
+
+func prepareNextAction(result *engine.PrepareResult) string {
+	if result == nil || result.Artifact == nil {
+		return "inspect prepare result"
+	}
+	if result.Status == engine.PrepareStatusAwaitingArtifactApproval {
+		return fmt.Sprintf("fabrikk artifact approve %s", result.RunID)
+	}
+	if result.Status != engine.PrepareStatusReady && result.NextAction != "" {
+		return result.NextAction
+	}
+	return fmt.Sprintf("fabrikk review %s", result.RunID)
+}
+
+type prepareFlags struct {
+	specPaths []string
+	options   engine.PrepareOptions
+}
+
+func parsePrepareFlags(args []string) (prepareFlags, error) {
+	flags := prepareFlags{
+		options: engine.DefaultPrepareOptions(),
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--spec":
+			value, next, err := requireFlagValue(args, i, "--spec")
+			if err != nil {
+				return prepareFlags{}, err
+			}
+			flags.specPaths = append(flags.specPaths, value)
+			i = next
+		case "--normalize":
+			value, next, err := requireFlagValue(args, i, "--normalize")
+			if err != nil {
+				return prepareFlags{}, err
+			}
+			switch value {
+			case string(state.NormalizationAuto):
+				flags.options.NormalizeMode = state.NormalizationAuto
+			case string(state.NormalizationAlways):
+				flags.options.NormalizeMode = state.NormalizationAlways
+			case string(state.NormalizationNever):
+				flags.options.NormalizeMode = state.NormalizationNever
+			default:
+				return prepareFlags{}, fmt.Errorf("unknown --normalize value %q; expected auto, always, or never", value)
+			}
+			i = next
+		case "--allow-llm-normalization":
+			flags.options.LLMConsent = true
+			flags.options.LLMConsentSource = consentSourceCLI
+		case "--fallback-deterministic":
+			flags.options.FallbackDeterministic = true
+		case "--converter-backend":
+			value, next, err := requireFlagValue(args, i, "--converter-backend")
+			if err != nil {
+				return prepareFlags{}, err
+			}
+			flags.options.ConverterBackendName = value
+			i = next
+		case "--verifier-backend":
+			value, next, err := requireFlagValue(args, i, "--verifier-backend")
+			if err != nil {
+				return prepareFlags{}, err
+			}
+			flags.options.VerifierBackendName = value
+			i = next
+		default:
+			return prepareFlags{}, fmt.Errorf("unknown prepare flag %q", args[i])
+		}
+	}
+	if len(flags.specPaths) == 0 {
+		return prepareFlags{}, fmt.Errorf("usage: fabrikk prepare --spec <path> [--spec <path>...]")
+	}
+	if flags.options.NormalizeMode == state.NormalizationNever && flags.options.FallbackDeterministic {
+		return prepareFlags{}, fmt.Errorf("--fallback-deterministic cannot be used with --normalize never")
+	}
+	return flags, nil
+}
+
+func validatePrepareFlags(flags prepareFlags) error {
+	if flags.options.NormalizeMode == state.NormalizationAlways && !flags.options.LLMConsent {
+		return fmt.Errorf("--normalize always requires --allow-llm-normalization or trusted project config")
+	}
+	return nil
+}
+
+type prepareProjectConfig struct {
+	SpecNormalization struct {
+		AllowLLMNormalization bool `yaml:"allow_llm_normalization"`
+	} `yaml:"spec_normalization"`
+	AllowLLMNormalization bool `yaml:"allow_llm_normalization"`
+}
+
+func applyTrustedPrepareConfig(wd string, flags *prepareFlags) error {
+	if flags == nil || flags.options.LLMConsent {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(wd, "fabrikk.yaml"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read fabrikk.yaml: %w", err)
+	}
+	var cfg prepareProjectConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse fabrikk.yaml: %w", err)
+	}
+	if cfg.SpecNormalization.AllowLLMNormalization || cfg.AllowLLMNormalization {
+		flags.options.LLMConsent = true
+		flags.options.LLMConsentSource = "config"
+	}
+	return nil
+}
+
+func requireFlagValue(args []string, i int, flag string) (value string, next int, err error) {
+	if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+		return "", i, fmt.Errorf("%s requires a value", flag)
+	}
+	return args[i+1], i + 1, nil
 }
 
 func cmdReview(_ context.Context, args []string) error {
@@ -219,7 +373,15 @@ func cmdReview(_ context.Context, args []string) error {
 	fmt.Printf("\nRequirements (%d):\n", len(artifact.Requirements))
 	for _, r := range artifact.Requirements {
 		fmt.Printf("  %s: %s\n", r.ID, truncate(r.Text, 80))
+		if len(r.SourceRefs) > 0 {
+			fmt.Printf("    Source refs:\n")
+			for _, ref := range r.SourceRefs {
+				fmt.Printf("      - %s:%d-%d %s\n", ref.Path, ref.LineStart, ref.LineEnd, truncate(ref.Excerpt, 80))
+			}
+		}
 	}
+
+	printReviewNormalizationEvidence(runDir, artifact)
 
 	if artifact.QualityGate != nil {
 		fmt.Printf("\nQuality gate: %s (timeout: %ds, required: %v)\n",
@@ -231,9 +393,95 @@ func cmdReview(_ context.Context, args []string) error {
 		fmt.Printf("Artifact hash: %s\n", artifact.ArtifactHash)
 	} else {
 		fmt.Printf("\nStatus: AWAITING APPROVAL\n")
-		fmt.Printf("Next: fabrikk approve %s\n", artifact.RunID)
+		fmt.Printf("Next: %s\n", reviewNextAction(runDir, artifact))
 	}
 
+	return nil
+}
+
+func printReviewNormalizationEvidence(runDir *state.RunDir, artifact *state.RunArtifact) {
+	metadata := artifact.Normalization
+	switch {
+	case metadata.UsedLLM:
+		fmt.Printf("\nNormalization: llm mode=%s\n", metadata.Mode)
+		fmt.Printf("Converter backend: %s\n", metadata.ConverterBackend)
+		fmt.Printf("Verifier backend: %s\n", metadata.VerifierBackend)
+		fmt.Printf("Source freshness: %s\n", normalizationSourceFreshness(runDir))
+		review, err := runDir.ReadSpecNormalizationReview()
+		if err != nil {
+			fmt.Printf("Normalization review: missing\n")
+			return
+		}
+		fmt.Printf("Normalization review: %s\n", review.Status)
+		fmt.Printf("Review summary: %s\n", review.Summary)
+		fmt.Printf("Blocking findings: %d\n", len(review.BlockingFindings))
+		fmt.Printf("Warnings: %d\n", len(review.Warnings))
+		fmt.Printf("reviewed_input_hash: %s\n", review.ReviewedInputHash)
+		for _, finding := range review.BlockingFindings {
+			fmt.Printf("  - [%s] %s\n", finding.Category, finding.Summary)
+			if finding.SuggestedRepair != "" {
+				fmt.Printf("    Repair: %s\n", finding.SuggestedRepair)
+			}
+		}
+	case metadata.UsedDeterministic:
+		label := "deterministic"
+		if metadata.FallbackDeterministic {
+			label = "deterministic fallback"
+		}
+		fmt.Printf("\nNormalization: %s mode=%s\n", label, metadata.Mode)
+	}
+}
+
+func normalizationSourceFreshness(runDir *state.RunDir) string {
+	manifest, err := runDir.ReadSpecNormalizationSourceManifest()
+	if err != nil {
+		return "unknown"
+	}
+	for _, source := range manifest.Sources {
+		fingerprint, err := state.SHA256File(source.Path)
+		if err != nil || fingerprint != source.Fingerprint {
+			return "stale"
+		}
+	}
+	return "current"
+}
+
+func reviewNextAction(runDir *state.RunDir, artifact *state.RunArtifact) string {
+	if artifact.Normalization.UsedLLM {
+		review, err := runDir.ReadSpecNormalizationReview()
+		if err != nil {
+			return "restore or rerun normalization review before approval"
+		}
+		switch review.Status {
+		case state.ReviewPass:
+			return fmt.Sprintf("fabrikk artifact approve %s", artifact.RunID)
+		case state.ReviewNeedsRevision:
+			return "revise the source spec or intentionally approve the draft after reviewing findings"
+		case state.ReviewFail:
+			return "revise the source spec before approval"
+		}
+	}
+	return fmt.Sprintf("fabrikk approve %s", artifact.RunID)
+}
+
+func cmdArtifact(ctx context.Context, args []string) error {
+	if len(args) < 2 || args[0] != "approve" {
+		return fmt.Errorf("usage: fabrikk artifact approve <run-id>")
+	}
+	runID := args[1]
+	wd, err := workDir()
+	if err != nil {
+		return err
+	}
+	runDir := state.NewRunDir(wd, runID)
+	eng := engine.New(runDir, wd)
+	approval, err := eng.ApproveRunArtifact(ctx, "user")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Run artifact approved: %s\n", approval.RunID)
+	fmt.Printf("reviewed_input_hash: %s\n", approval.ReviewedInputHash)
+	fmt.Printf("Next: fabrikk tech-spec draft %s --from <path>\n", approval.RunID)
 	return nil
 }
 
