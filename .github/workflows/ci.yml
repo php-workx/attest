@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 # Each job appears as a separate check on the PR.
 # Go module cache is shared via actions/setup-go's built-in caching.
 
@@ -116,4 +119,4 @@ jobs:
       image: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
-      - run: semgrep scan --config auto
+      - run: semgrep scan --config auto --error

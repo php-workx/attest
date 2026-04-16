@@ -31,6 +31,7 @@ func RunQualityGate(ctx context.Context, gate *state.QualityGate, workDir string
 	defer cancel()
 
 	start := time.Now()
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, "sh", "-c", gate.Command) //nolint:gosec // G204: command comes from the run artifact's quality gate config, not user input
 	cmd.Dir = workDir
 

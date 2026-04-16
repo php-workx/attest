@@ -208,6 +208,7 @@ func Invoke(ctx context.Context, backend *CLIBackend, prompt string, timeoutSec 
 
 	args, useStdin := BuildInvokeArgs(backend, prompt)
 
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, backend.Command, args...) //nolint:gosec // command is from trusted CLIBackend config, not user input
 	cmd.Stderr = os.Stderr
 

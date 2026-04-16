@@ -64,7 +64,7 @@ vuln:
 # Semantic code scan (optional, skip if not installed)
 semgrep:
     @if command -v semgrep >/dev/null 2>&1; then \
-        semgrep --config auto .; \
+        semgrep --config auto --error .; \
     else \
         echo "warning: semgrep not installed, skipping semantic scan"; \
     fi
