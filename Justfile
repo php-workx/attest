@@ -17,8 +17,8 @@ default:
 # Pre-commit: fast local checks + fresh non-race tests
 pre-commit: fmt vet lint build-check mod-tidy actionlint gitleaks test-fast
 
-# Pre-push: pre-commit checks + race tests + vulnerability scan
-pre-push: pre-commit test-race vuln
+# Pre-push: pre-commit checks + race tests + vulnerability scan + semgrep
+pre-push: pre-commit test-race vuln semgrep
 
 # Full quality gate: same checks as pre-push
 check: pre-push
@@ -60,6 +60,14 @@ gitleaks:
 # Scan for known vulnerabilities in dependencies
 vuln:
     {{go_tool}} govulncheck ./...
+
+# Semantic code scan (optional, skip if not installed)
+semgrep:
+    @if command -v semgrep >/dev/null 2>&1; then \
+        semgrep --config auto .; \
+    else \
+        echo "warning: semgrep not installed, skipping semantic scan"; \
+    fi
 
 # --- Testing ---
 
