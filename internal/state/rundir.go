@@ -85,6 +85,49 @@ func (d *RunDir) ExecutionPlanReview() string { return d.Path("execution-plan-re
 // ExecutionPlanApproval returns the path to execution-plan-approval.json.
 func (d *RunDir) ExecutionPlanApproval() string { return d.Path("execution-plan-approval.json") }
 
+// NormalizedArtifactCandidate returns the path to normalized-artifact-candidate.json.
+func (d *RunDir) NormalizedArtifactCandidate() string {
+	return d.Path("normalized-artifact-candidate.json")
+}
+
+// SpecNormalizationSourceManifest returns the path to spec-normalization-source-manifest.json.
+func (d *RunDir) SpecNormalizationSourceManifest() string {
+	return d.Path("spec-normalization-source-manifest.json")
+}
+
+// SpecNormalizationValidation returns the path to spec-normalization-validation.json.
+func (d *RunDir) SpecNormalizationValidation() string {
+	return d.Path("spec-normalization-validation.json")
+}
+
+// SpecNormalizationReview returns the path to spec-normalization-review.json.
+func (d *RunDir) SpecNormalizationReview() string {
+	return d.Path("spec-normalization-review.json")
+}
+
+// RunArtifactApproval returns the path to run-artifact-approval.json.
+func (d *RunDir) RunArtifactApproval() string { return d.Path("run-artifact-approval.json") }
+
+// SpecNormalizationConverterPrompt returns the path to spec-normalization-converter-prompt.md.
+func (d *RunDir) SpecNormalizationConverterPrompt() string {
+	return d.Path("spec-normalization-converter-prompt.md")
+}
+
+// SpecNormalizationConverterRaw returns the path to spec-normalization-converter-raw.txt.
+func (d *RunDir) SpecNormalizationConverterRaw() string {
+	return d.Path("spec-normalization-converter-raw.txt")
+}
+
+// SpecNormalizationVerifierPrompt returns the path to spec-normalization-verifier-prompt.md.
+func (d *RunDir) SpecNormalizationVerifierPrompt() string {
+	return d.Path("spec-normalization-verifier-prompt.md")
+}
+
+// SpecNormalizationVerifierRaw returns the path to spec-normalization-verifier-raw.txt.
+func (d *RunDir) SpecNormalizationVerifierRaw() string {
+	return d.Path("spec-normalization-verifier-raw.txt")
+}
+
 // ClaimPath returns the path to a specific claim file.
 func (d *RunDir) ClaimPath(taskID string) string {
 	return filepath.Join(d.Root, "claims", taskID+".json")
@@ -123,6 +166,96 @@ func (d *RunDir) ReadArtifact() (*RunArtifact, error) {
 		return nil, err
 	}
 	return &a, nil
+}
+
+// WriteNormalizedArtifactCandidate writes the normalized artifact candidate atomically.
+func (d *RunDir) WriteNormalizedArtifactCandidate(a *RunArtifact) error {
+	return WriteJSON(d.NormalizedArtifactCandidate(), a)
+}
+
+// ReadNormalizedArtifactCandidate reads the normalized artifact candidate.
+func (d *RunDir) ReadNormalizedArtifactCandidate() (*RunArtifact, error) {
+	var a RunArtifact
+	if err := ReadJSON(d.NormalizedArtifactCandidate(), &a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// WriteSpecNormalizationSourceManifest writes the normalization source manifest atomically.
+func (d *RunDir) WriteSpecNormalizationSourceManifest(m *SpecNormalizationSourceManifest) error {
+	return WriteJSON(d.SpecNormalizationSourceManifest(), m)
+}
+
+// ReadSpecNormalizationSourceManifest reads the normalization source manifest.
+func (d *RunDir) ReadSpecNormalizationSourceManifest() (*SpecNormalizationSourceManifest, error) {
+	var m SpecNormalizationSourceManifest
+	if err := ReadJSON(d.SpecNormalizationSourceManifest(), &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// WriteSpecNormalizationValidation writes deterministic normalization validation findings atomically.
+func (d *RunDir) WriteSpecNormalizationValidation(findings []ReviewFinding) error {
+	return WriteJSON(d.SpecNormalizationValidation(), findings)
+}
+
+// ReadSpecNormalizationValidation reads deterministic normalization validation findings.
+func (d *RunDir) ReadSpecNormalizationValidation() ([]ReviewFinding, error) {
+	var findings []ReviewFinding
+	if err := ReadJSON(d.SpecNormalizationValidation(), &findings); err != nil {
+		return nil, err
+	}
+	return findings, nil
+}
+
+// WriteSpecNormalizationReview writes the normalization review atomically.
+func (d *RunDir) WriteSpecNormalizationReview(review *SpecNormalizationReview) error {
+	return WriteJSON(d.SpecNormalizationReview(), review)
+}
+
+// ReadSpecNormalizationReview reads the normalization review.
+func (d *RunDir) ReadSpecNormalizationReview() (*SpecNormalizationReview, error) {
+	var review SpecNormalizationReview
+	if err := ReadJSON(d.SpecNormalizationReview(), &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+// WriteRunArtifactApproval writes run-artifact approval atomically.
+func (d *RunDir) WriteRunArtifactApproval(approval *RunArtifactApproval) error {
+	return WriteJSON(d.RunArtifactApproval(), approval)
+}
+
+// ReadRunArtifactApproval reads run-artifact approval.
+func (d *RunDir) ReadRunArtifactApproval() (*RunArtifactApproval, error) {
+	var approval RunArtifactApproval
+	if err := ReadJSON(d.RunArtifactApproval(), &approval); err != nil {
+		return nil, err
+	}
+	return &approval, nil
+}
+
+// WriteSpecNormalizationConverterPrompt writes the converter prompt atomically.
+func (d *RunDir) WriteSpecNormalizationConverterPrompt(contents []byte) error {
+	return WriteAtomic(d.SpecNormalizationConverterPrompt(), contents)
+}
+
+// WriteSpecNormalizationConverterRaw writes the raw converter output atomically.
+func (d *RunDir) WriteSpecNormalizationConverterRaw(contents []byte) error {
+	return WriteAtomic(d.SpecNormalizationConverterRaw(), contents)
+}
+
+// WriteSpecNormalizationVerifierPrompt writes the verifier prompt atomically.
+func (d *RunDir) WriteSpecNormalizationVerifierPrompt(contents []byte) error {
+	return WriteAtomic(d.SpecNormalizationVerifierPrompt(), contents)
+}
+
+// WriteSpecNormalizationVerifierRaw writes the raw verifier output atomically.
+func (d *RunDir) WriteSpecNormalizationVerifierRaw(contents []byte) error {
+	return WriteAtomic(d.SpecNormalizationVerifierRaw(), contents)
 }
 
 // WriteTasks writes the task list atomically.

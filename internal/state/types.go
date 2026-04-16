@@ -121,20 +121,21 @@ func normalizeBoundaryItems(items []string) []string {
 
 // RunArtifact is the approved normalized contract for a run (spec section 3.2).
 type RunArtifact struct {
-	SchemaVersion  string          `json:"schema_version"`
-	RunID          string          `json:"run_id"`
-	SourceSpecs    []SourceSpec    `json:"source_specs"`
-	Requirements   []Requirement   `json:"requirements"`
-	Assumptions    []string        `json:"assumptions"`
-	Clarifications []Clarification `json:"clarifications"`
-	Dependencies   []string        `json:"dependencies"`
-	RiskProfile    string          `json:"risk_profile"`
-	Boundaries     Boundaries      `json:"boundaries"`
-	RoutingPolicy  RoutingPolicy   `json:"routing_policy"`
-	QualityGate    *QualityGate    `json:"quality_gate,omitempty"`
-	ApprovedAt     *time.Time      `json:"approved_at,omitempty"`
-	ApprovedBy     string          `json:"approved_by,omitempty"`
-	ArtifactHash   string          `json:"artifact_hash,omitempty"`
+	SchemaVersion  string                `json:"schema_version"`
+	RunID          string                `json:"run_id"`
+	SourceSpecs    []SourceSpec          `json:"source_specs"`
+	Requirements   []Requirement         `json:"requirements"`
+	Assumptions    []string              `json:"assumptions"`
+	Clarifications []Clarification       `json:"clarifications"`
+	Dependencies   []string              `json:"dependencies"`
+	RiskProfile    string                `json:"risk_profile"`
+	Boundaries     Boundaries            `json:"boundaries"`
+	RoutingPolicy  RoutingPolicy         `json:"routing_policy"`
+	QualityGate    *QualityGate          `json:"quality_gate,omitempty"`
+	ApprovedAt     *time.Time            `json:"approved_at,omitempty"`
+	ApprovedBy     string                `json:"approved_by,omitempty"`
+	ArtifactHash   string                `json:"artifact_hash,omitempty"`
+	Normalization  NormalizationMetadata `json:"normalization,omitzero"`
 }
 
 // ArtifactStatus tracks the lifecycle of a generated planning artifact.
@@ -158,18 +159,97 @@ const (
 	ReviewNeedsRevision ReviewStatus = "needs_revision"
 )
 
+// Artifact type values for normalization-specific review and approval records.
+const (
+	ArtifactTypeSpecNormalizationReview = "spec_normalization_review"
+	ArtifactTypeRunArtifactApproval     = "run_artifact_approval"
+)
+
 // SourceSpec identifies an input spec file.
 type SourceSpec struct {
 	Path        string `json:"path"`
 	Fingerprint string `json:"fingerprint"`
 }
 
+// SpecNormalizationSourceManifest records the exact source inputs reviewed for a normalized artifact.
+type SpecNormalizationSourceManifest struct {
+	SchemaVersion string                `json:"schema_version"`
+	RunID         string                `json:"run_id"`
+	Sources       []SourceManifestEntry `json:"sources"`
+}
+
+// SourceManifestEntry records stable metadata for one source spec.
+type SourceManifestEntry struct {
+	Path             string `json:"path"`
+	Fingerprint      string `json:"fingerprint"`
+	ByteSize         int64  `json:"byte_size"`
+	LineCount        int    `json:"line_count"`
+	LineNumberedText string `json:"line_numbered_text,omitempty"`
+}
+
+// SpecNormalizationReviewedInput is the canonical approval boundary for a normalization review.
+type SpecNormalizationReviewedInput struct {
+	SourceManifestHash     string `json:"source_manifest_hash"`
+	NormalizedArtifactHash string `json:"normalized_artifact_hash"`
+	ConverterPromptHash    string `json:"converter_prompt_hash"`
+	VerifierPromptHash     string `json:"verifier_prompt_hash"`
+}
+
+// SourceRef points back to the original source text for a normalized requirement.
+type SourceRef struct {
+	Path        string `json:"path"`
+	LineStart   int    `json:"line_start"`
+	LineEnd     int    `json:"line_end"`
+	SectionPath string `json:"section_path,omitempty"`
+	Excerpt     string `json:"excerpt,omitempty"`
+}
+
 // Requirement is a single tracked requirement from the source specs.
 type Requirement struct {
-	ID         string `json:"id"`
-	Text       string `json:"text"`
-	SourceSpec string `json:"source_spec"`
-	SourceLine int    `json:"source_line,omitempty"`
+	ID         string      `json:"id"`
+	Text       string      `json:"text"`
+	SourceSpec string      `json:"source_spec"`
+	SourceLine int         `json:"source_line,omitempty"`
+	SourceRefs []SourceRef `json:"source_refs,omitempty"`
+	Confidence string      `json:"confidence,omitempty"`
+}
+
+// NormalizationMode controls whether flexible specs are normalized by an LLM.
+type NormalizationMode string
+
+// Normalization modes for spec ingestion.
+const (
+	NormalizationAuto   NormalizationMode = "auto"
+	NormalizationAlways NormalizationMode = "always"
+	NormalizationNever  NormalizationMode = "never"
+)
+
+// NormalizationMetadata records how a run artifact was produced from source specs.
+type NormalizationMetadata struct {
+	Mode                  NormalizationMode `json:"mode,omitempty"`
+	UsedLLM               bool              `json:"used_llm"`
+	UsedDeterministic     bool              `json:"used_deterministic"`
+	FallbackDeterministic bool              `json:"fallback_deterministic"`
+	ConsentSource         string            `json:"consent_source,omitempty"`
+	ConverterBackend      string            `json:"converter_backend,omitempty"`
+	VerifierBackend       string            `json:"verifier_backend,omitempty"`
+	ReviewedAt            *time.Time        `json:"reviewed_at,omitempty"`
+	ApprovedAt            *time.Time        `json:"approved_at,omitempty"`
+	ReviewedInputHash     string            `json:"reviewed_input_hash,omitempty"`
+}
+
+// IsZero reports whether no spec normalization metadata was recorded.
+func (m NormalizationMetadata) IsZero() bool {
+	return m.Mode == "" &&
+		!m.UsedLLM &&
+		!m.UsedDeterministic &&
+		!m.FallbackDeterministic &&
+		m.ConsentSource == "" &&
+		m.ConverterBackend == "" &&
+		m.VerifierBackend == "" &&
+		m.ReviewedAt == nil &&
+		m.ApprovedAt == nil &&
+		m.ReviewedInputHash == ""
 }
 
 // Clarification records an unresolved or resolved question (spec section 3.3).
@@ -444,14 +524,17 @@ type RunState string
 const (
 	RunPreparing             RunState = "preparing"
 	RunAwaitingClarification RunState = "awaiting_clarification"
-	RunAwaitingApproval      RunState = "awaiting_approval"
-	RunApproved              RunState = "approved"
-	RunLaunching             RunState = "launching"
-	RunRunning               RunState = "running"
-	RunBlocked               RunState = "blocked"
-	RunFailed                RunState = "failed"
-	RunCompleted             RunState = "completed"
-	RunStopped               RunState = "stopped"
+	// RunAwaitingArtifactApproval is the dedicated normalized run-artifact gate.
+	// RunAwaitingApproval remains reserved for the final execution-plan approval flow.
+	RunAwaitingArtifactApproval RunState = "awaiting_artifact_approval"
+	RunAwaitingApproval         RunState = "awaiting_approval"
+	RunApproved                 RunState = "approved"
+	RunLaunching                RunState = "launching"
+	RunRunning                  RunState = "running"
+	RunBlocked                  RunState = "blocked"
+	RunFailed                   RunState = "failed"
+	RunCompleted                RunState = "completed"
+	RunStopped                  RunState = "stopped"
 )
 
 // CompletionReport is the worker's output report (spec section 3.7).
@@ -585,6 +668,21 @@ type TechnicalSpecReview struct {
 	ReviewedAt        time.Time       `json:"reviewed_at"`
 }
 
+// SpecNormalizationReview records the verifier result for a normalized run artifact candidate.
+type SpecNormalizationReview struct {
+	SchemaVersion          string          `json:"schema_version"`
+	RunID                  string          `json:"run_id"`
+	ArtifactType           string          `json:"artifact_type"`
+	Status                 ReviewStatus    `json:"status"`
+	Summary                string          `json:"summary"`
+	NormalizedArtifactHash string          `json:"normalized_artifact_hash"`
+	SourceManifestHash     string          `json:"source_manifest_hash"`
+	ReviewedInputHash      string          `json:"reviewed_input_hash"`
+	ReviewedAt             time.Time       `json:"reviewed_at"`
+	BlockingFindings       []ReviewFinding `json:"blocking_findings,omitempty"`
+	Warnings               []ReviewWarning `json:"warnings,omitempty"`
+}
+
 // Wave is a conflict-free execution batch produced by the scheduler. The initial
 // grouping is by dependency depth, but compiler.ComputeWaves shifts tasks whose
 // file scopes collide into later waves, so the Tasks in a Wave are guaranteed to
@@ -664,6 +762,17 @@ type ArtifactApproval struct {
 	ApprovedBy    string         `json:"approved_by"`
 	ApprovedAt    time.Time      `json:"approved_at"`
 	Reason        string         `json:"reason,omitempty"`
+}
+
+// RunArtifactApproval records explicit approval of a normalized run artifact.
+type RunArtifactApproval struct {
+	SchemaVersion          string    `json:"schema_version"`
+	RunID                  string    `json:"run_id"`
+	ArtifactType           string    `json:"artifact_type"`
+	NormalizedArtifactHash string    `json:"normalized_artifact_hash"`
+	SourceManifestHash     string    `json:"source_manifest_hash"`
+	ReviewedInputHash      string    `json:"reviewed_input_hash"`
+	ApprovedAt             time.Time `json:"approved_at"`
 }
 
 // EngineInfo records the engine process metadata (spec section 2.4).
