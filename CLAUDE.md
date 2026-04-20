@@ -84,5 +84,5 @@ The `.tickets/` directory holds all task state as markdown files with YAML front
 ## Workflow
 
 - Feature branches with PRs — no direct pushes to main
-- Git hooks (`.githooks/`) run `just pre-commit` and `just check` automatically
+- Git hooks installed into `.git/hooks/` run `just pre-commit` and `just pre-push` automatically
 - CI (`.github/workflows/ci.yml`) mirrors the same checks

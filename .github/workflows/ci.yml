@@ -21,7 +21,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go tool -modfile=tools.mod actionlint .github/workflows/*.yml
+      - uses: extractions/setup-just@v2
+      - run: just actionlint
 
   vet:
     name: Vet
@@ -31,7 +32,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go vet ./...
+      - uses: extractions/setup-just@v2
+      - run: just vet
 
   lint:
     name: Lint
@@ -41,7 +43,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go tool -modfile=tools.mod golangci-lint run
+      - uses: extractions/setup-just@v2
+      - run: just lint-check
 
   fmt:
     name: Format
@@ -51,9 +54,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: extractions/setup-just@v2
       - name: Check formatting
-        run: |
-          test -z "$(go tool -modfile=tools.mod gofumpt --extra -l .)" || (echo "gofumpt: unformatted files:" && go tool -modfile=tools.mod gofumpt --extra -l . && exit 1)
+        run: just format-check
 
   test:
     name: Test
@@ -63,7 +66,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race -count=1 ./...
+      - uses: extractions/setup-just@v2
+      - run: just test-race
 
   build:
     name: Build
@@ -75,7 +79,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go build -ldflags "-X main.Version=$(git describe --tags --always --dirty) -X main.GitCommit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o /dev/null ./cmd/fabrikk
+      - uses: extractions/setup-just@v2
+      - run: just build-check
 
   mod-tidy:
     name: Mod Tidy
@@ -85,11 +90,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: extractions/setup-just@v2
       - name: Check go.mod and go.sum are tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod || (echo "go.mod not tidy — run 'go mod tidy'" && exit 1)
-          if [ -f go.sum ]; then git diff --exit-code go.sum || (echo "go.sum not tidy — run 'go mod tidy'" && exit 1); fi
+        run: just mod-tidy-check
 
   vuln:
     name: Vulnerability Scan
@@ -99,7 +102,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go tool -modfile=tools.mod golang.org/x/vuln/cmd/govulncheck ./...
+      - uses: extractions/setup-just@v2
+      - run: just vuln
 
   trufflehog:
     name: Secret Scan
@@ -115,8 +119,13 @@ jobs:
   semgrep:
     name: Semantic Scan
     runs-on: ubuntu-latest
-    container:
-      image: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
-      - run: semgrep scan --config auto --error
+      - uses: extractions/setup-just@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install semgrep
+        run: python -m pip install --upgrade pip semgrep
+      - name: Run semgrep
+        run: just semgrep
