@@ -31,62 +31,41 @@ func ReadBoundedLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
 	// Preallocate conservatively; grows on demand up to maxBytes.
 	buf := make([]byte, 0, min(maxBytes, 4096))
 
-	for len(buf) < maxBytes {
-		b, err := r.ReadByte()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if len(buf) > 0 {
-					// Partial line at EOF: no terminating newline.
-					return buf, io.EOF
-				}
-
-				return nil, io.EOF
-			}
-
-			return nil, err
+	for {
+		fragment, err := r.ReadSlice('\n')
+		content := fragment
+		if err == nil && len(content) > 0 {
+			content = content[:len(content)-1]
 		}
 
-		if b == '\n' {
-			// Strip a trailing '\r' to handle CRLF line endings.
+		if len(buf)+len(content) > maxBytes {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				if drainErr := drainOversizeLine(r); drainErr != nil && !errors.Is(drainErr, io.EOF) {
+					return nil, drainErr
+				}
+			}
+			return nil, ErrLineTooLong
+		}
+
+		buf = append(buf, content...)
+
+		switch {
+		case err == nil:
 			if len(buf) > 0 && buf[len(buf)-1] == '\r' {
 				buf = buf[:len(buf)-1]
 			}
-
 			return buf, nil
-		}
-
-		buf = append(buf, b)
-	}
-
-	// We have consumed exactly maxBytes without seeing '\n'. Peek at the next
-	// byte to determine whether the line is exactly maxBytes long (terminates
-	// immediately) or exceeds the limit (needs drain).
-	b, err := r.ReadByte()
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			// maxBytes then EOF with no newline: partial line within limit.
+		case errors.Is(err, io.EOF):
+			if len(buf) == 0 {
+				return nil, io.EOF
+			}
 			return buf, io.EOF
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return nil, err
 		}
-
-		return nil, err
 	}
-
-	if b == '\n' {
-		// Line content is exactly maxBytes; the newline is the (maxBytes+1)th byte.
-		if len(buf) > 0 && buf[len(buf)-1] == '\r' {
-			buf = buf[:len(buf)-1]
-		}
-
-		return buf, nil
-	}
-
-	// Line exceeds maxBytes. The byte we just read is part of the overrun;
-	// drain any remaining bytes so the next call starts at the next line.
-	if err := drainOversizeLine(r); err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-
-	return nil, ErrLineTooLong
 }
 
 // drainOversizeLine reads and discards bytes from r until a '\n' is found or

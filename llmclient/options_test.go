@@ -322,6 +322,34 @@ func TestApplyOptionsDeepCopiesExecutionControlInputs(t *testing.T) {
 	}
 }
 
+func TestApplyOptionsDeepCopiesHostToolSchemas(t *testing.T) {
+	tools := []llmclient.Tool{{
+		Name:        "lookup",
+		InputSchema: map[string]interface{}{"type": "object"},
+	}}
+
+	cfg := llmclient.ApplyOptions(llmclient.DefaultRequestConfig(), []llmclient.Option{
+		llmclient.WithHostTools(tools),
+	})
+	tools[0].InputSchema["type"] = "mutated"
+
+	if cfg.HostTools[0].InputSchema["type"] != "object" {
+		t.Fatalf("WithHostTools aliased caller InputSchema: %v", cfg.HostTools[0].InputSchema)
+	}
+
+	base := llmclient.DefaultRequestConfig()
+	base.HostTools = []llmclient.Tool{{
+		Name:        "base",
+		InputSchema: map[string]interface{}{"type": "object"},
+	}}
+	applied := llmclient.ApplyOptions(base, nil)
+	applied.HostTools[0].InputSchema["type"] = "mutated"
+
+	if base.HostTools[0].InputSchema["type"] != "object" {
+		t.Fatalf("ApplyOptions aliased base HostTools InputSchema: %v", base.HostTools[0].InputSchema)
+	}
+}
+
 func TestApplyOptionsChaining(t *testing.T) {
 	cfg := llmclient.ApplyOptions(llmclient.DefaultRequestConfig(), []llmclient.Option{
 		llmclient.WithModel("sonnet"),

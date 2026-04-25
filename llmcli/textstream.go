@@ -57,12 +57,15 @@ func streamTextProcess(
 		}
 		defer te.close()
 
-		effectiveFidelity := fidelity
-		if effectiveFidelity == nil {
+		var effectiveFidelity *llmclient.Fidelity
+		if fidelity == nil {
 			effectiveFidelity = &llmclient.Fidelity{
 				Streaming:   llmclient.StreamingBufferedOnly,
 				ToolControl: llmclient.ToolControlNone,
 			}
+		} else {
+			cloned := *fidelity
+			effectiveFidelity = &cloned
 		}
 		streaming := effectiveFidelity.Streaming
 		if streaming == "" {

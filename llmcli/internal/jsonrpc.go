@@ -68,12 +68,12 @@ func ReadFrame(r *bufio.Reader, maxHeaderBytes, maxBodyBytes int) ([]byte, error
 			break
 		}
 
-		if strings.HasPrefix(stripped, "Content-Length: ") {
+		if key, value, ok := strings.Cut(stripped, ":"); ok && strings.EqualFold(strings.TrimSpace(key), "Content-Length") {
 			if contentLength != -1 {
 				return nil, ErrDuplicateContentLength
 			}
 
-			valStr := strings.TrimPrefix(stripped, "Content-Length: ")
+			valStr := strings.TrimSpace(value)
 			n, parseErr := strconv.Atoi(valStr)
 			if parseErr != nil {
 				return nil, fmt.Errorf("%w: %q", ErrInvalidContentLength, stripped)

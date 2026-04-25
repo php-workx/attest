@@ -147,7 +147,6 @@ func TestReadFrame_RejectsInvalidContentLength(t *testing.T) {
 		{"hex", "0x10"},
 		{"float", "1.5"},
 		{"empty", ""},
-		{"space", " 5"},
 	}
 
 	for _, tc := range cases {
@@ -160,6 +159,32 @@ func TestReadFrame_RejectsInvalidContentLength(t *testing.T) {
 				t.Fatalf("ReadFrame (val=%q) err = %v; want ErrInvalidContentLength", tc.val, err)
 			}
 		})
+	}
+}
+
+func TestReadFrame_ContentLengthCaseInsensitive(t *testing.T) {
+	const body = `{"ok":true}`
+	raw := fmt.Sprintf("content-length: %d\r\n\r\n%s", len(body), body)
+
+	got, err := ReadFrame(lspReader(raw), testMaxHeader, testMaxBody)
+	if err != nil {
+		t.Fatalf("ReadFrame: unexpected error: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("body = %q; want %q", got, body)
+	}
+}
+
+func TestReadFrame_ContentLengthAllowsWhitespace(t *testing.T) {
+	const body = `{"ok":true}`
+	raw := fmt.Sprintf("CONTENT-LENGTH:  %d \r\n\r\n%s", len(body), body)
+
+	got, err := ReadFrame(lspReader(raw), testMaxHeader, testMaxBody)
+	if err != nil {
+		t.Fatalf("ReadFrame: unexpected error: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("body = %q; want %q", got, body)
 	}
 }
 

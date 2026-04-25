@@ -84,7 +84,7 @@ func TestRegistry_ResetForTest(t *testing.T) {
 
 	mid := registeredBackendFactories()
 	if len(mid) != 2 {
-		t.Errorf("mid-test registry length: got %d, want 2", len(mid))
+		t.Fatalf("mid-test registry length: got %d, want 2", len(mid))
 	}
 	if mid[0].Name != "fake-a" || mid[1].Name != "fake-b" {
 		t.Errorf("mid-test registry names: got %q %q, want fake-a fake-b", mid[0].Name, mid[1].Name)

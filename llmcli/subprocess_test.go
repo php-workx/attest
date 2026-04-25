@@ -80,14 +80,15 @@ func testExecutable(t *testing.T) string {
 	return exe
 }
 
-// baseEnv returns os.Environ with all LLMCLI_TEST_* variables stripped so
-// fixture child processes do not accidentally inherit a fixture mode.
+// baseEnv returns os.Environ with fixture-control variables stripped so fixture
+// child processes do not accidentally inherit a fixture mode.
 func baseEnv() []string {
 	env := os.Environ()
 	filtered := make([]string, 0, len(env))
 
 	for _, e := range env {
-		if strings.HasPrefix(e, "LLMCLI_TEST_") {
+		if strings.HasPrefix(e, "LLMCLI_TEST_") ||
+			strings.HasPrefix(e, "FABRIKK_LLMCLI_TEST_") {
 			continue
 		}
 
@@ -315,5 +316,18 @@ func TestResolveProcessEnvPrecedence(t *testing.T) {
 	want := []string{"A=1", "B=overlay", "C=override", "D=override"}
 	if strings.Join(env, "\n") != strings.Join(want, "\n") {
 		t.Errorf("env = %v, want %v", env, want)
+	}
+}
+
+func TestResolveProcessEnvExplicitEmptyReplacement(t *testing.T) {
+	cfg := llmclient.DefaultRequestConfig()
+	cfg.EnvironmentSet = true
+
+	env := resolveProcessEnv(cfg, nil)
+	if env == nil {
+		t.Fatal("resolveProcessEnv returned nil for explicit empty replacement environment")
+	}
+	if len(env) != 0 {
+		t.Fatalf("resolveProcessEnv length = %d, want 0; env=%v", len(env), env)
 	}
 }

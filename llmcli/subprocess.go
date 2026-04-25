@@ -74,6 +74,10 @@ type supervisor struct {
 // On success the caller owns s.Stdout and must read it to EOF before calling
 // s.wait(). On failure all resources are released before returning.
 func startSupervised(ctx context.Context, spec processSpec) (*supervisor, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	//nolint:gosec // command and args are caller-controlled; callers must vet them
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- spec.Command/spec.Args are assembled from detected CLI binaries and explicit backend-owned args, not shell input.
 	cmd := exec.Command(spec.Command, spec.Args...)
@@ -94,6 +98,11 @@ func startSupervised(ctx context.Context, spec processSpec) (*supervisor, error)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("llmcli: stdout pipe: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		_ = stdoutPipe.Close()
+		return nil, err
 	}
 
 	tail := newTailWriter()
@@ -193,7 +202,7 @@ func (s *supervisor) terminate(_ error) {
 		return
 	}
 
-	_ = terminateProcessTree(s.cmd.Process.Pid, defaultGracePeriod)
+	_ = terminateProcessTree(s.cmd.Process.Pid, defaultGracePeriod, s.done)
 }
 
 // stderrTail returns the tail of stderr captured from the subprocess. For a

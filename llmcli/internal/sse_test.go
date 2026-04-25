@@ -91,15 +91,15 @@ func TestReadEvent_OversizeData(t *testing.T) {
 	// Build a raw stream with an oversize data line followed by a normal field,
 	// then the blank-line event terminator.
 	oversizeLine := "data: " + strings.Repeat("x", 200) + "\n"
-	raw := oversizeLine + "event: big\n\n"
+	raw := oversizeLine + "event: big\ndata: ok\n\n"
 
 	ev, err := ReadEvent(sseReader(raw), 64) // limit is 64 bytes
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Oversize data line should be dropped.
-	if len(ev.Data) != 0 {
-		t.Errorf("Data: got %q; want empty (oversize dropped)", ev.Data)
+	// Oversize data line should be dropped while later data is preserved.
+	if string(ev.Data) != "ok" {
+		t.Errorf("Data: got %q; want %q", ev.Data, "ok")
 	}
 	// The event: field after the oversize line must still be present.
 	if ev.Event != "big" {
@@ -145,6 +145,9 @@ func TestReadEvent_CommentLinesIgnored(t *testing.T) {
 	if string(ev.Data) != sseTestPayload {
 		t.Errorf("Data: got %q; want %q", ev.Data, sseTestPayload)
 	}
+	if ev.Event != "" || ev.ID != "" || ev.Retry != 0 {
+		t.Errorf("control-only fields leaked into next event: %+v", ev)
+	}
 }
 
 func TestReadEvent_CommentOnlyBlockSkipped(t *testing.T) {
@@ -172,17 +175,40 @@ func TestReadEvent_OversizeOnlyBlockSkipped(t *testing.T) {
 	}
 }
 
+func TestReadEvent_ControlOnlyBlockSkipped(t *testing.T) {
+	const raw = "event: ping\nid: 42\nretry: 1000\n\ndata: " + sseTestPayload + "\n\n"
+
+	ev, err := ReadEvent(sseReader(raw), 4096)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(ev.Data) != sseTestPayload {
+		t.Errorf("Data: got %q; want %q", ev.Data, sseTestPayload)
+	}
+}
+
 // TestReadEvent_PartialEventAtEOF verifies that a partial event (no trailing
-// blank line) is dispatched with io.EOF (Criterion 1).
+// blank line) is dispatched before EOF (Criterion 1).
 func TestReadEvent_PartialEventAtEOF(t *testing.T) {
 	const raw = "data: incomplete" // no trailing \n\n
 
 	ev, err := ReadEvent(sseReader(raw), 4096)
-	if err != io.EOF {
-		t.Fatalf("err: got %v; want io.EOF", err)
+	if err != nil {
+		t.Fatalf("err: got %v; want nil", err)
 	}
 	if string(ev.Data) != "incomplete" {
 		t.Errorf("Data: got %q; want %q", ev.Data, "incomplete")
+	}
+}
+
+func TestReadEvent_PartialEventAtEOFNextReadEOF(t *testing.T) {
+	r := sseReader("data: incomplete")
+
+	if _, err := ReadEvent(r, 4096); err != nil {
+		t.Fatalf("first ReadEvent: got %v; want nil", err)
+	}
+	if _, err := ReadEvent(r, 4096); err != io.EOF {
+		t.Fatalf("second ReadEvent: got %v; want io.EOF", err)
 	}
 }
 

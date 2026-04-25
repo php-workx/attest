@@ -23,13 +23,14 @@ func configureProcessGroup(cmd *exec.Cmd) {
 
 // terminateProcessTree sends SIGTERM to the process group identified by pid.
 // After the grace period it escalates to SIGKILL in a background goroutine, so
-// this function returns as soon as SIGTERM is sent. Errors are ignored when the
-// process group is already gone (ESRCH).
+// this function returns as soon as SIGTERM is sent. The escalation is cancelled
+// when reaped is closed. Errors are ignored when the process group is already
+// gone (ESRCH).
 //
 // Background: we cannot poll kill(-pgid, 0) to detect exit because zombie
 // processes remain in their process group until reaped by cmd.Wait(). Sending
 // SIGKILL asynchronously covers stuck processes without blocking the caller.
-func terminateProcessTree(pid int, grace time.Duration) error {
+func terminateProcessTree(pid int, grace time.Duration, reaped <-chan struct{}) error {
 	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
 		if isProcessNotFound(err) {
 			return nil
@@ -42,8 +43,13 @@ func terminateProcessTree(pid int, grace time.Duration) error {
 	// In the common case the process exits from SIGTERM first; this goroutine
 	// then sends SIGKILL to a dead process group (ESRCH, ignored).
 	go func() {
-		time.Sleep(grace)
-		_ = syscall.Kill(-pid, syscall.SIGKILL) // best-effort; ESRCH expected when already reaped
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			_ = syscall.Kill(-pid, syscall.SIGKILL) // best-effort; ESRCH expected when already reaped
+		case <-reaped:
+		}
 	}()
 
 	return nil

@@ -19,7 +19,8 @@ func contextWithRequestTimeout(ctx context.Context, cfg llmclient.RequestConfig)
 func resolveProcessEnv(cfg llmclient.RequestConfig, backendOverrides map[string]string) []string { //nolint:gocritic // RequestConfig value mirrors ApplyOptions return semantics.
 	var base []string
 	if cfg.EnvironmentSet {
-		base = append([]string(nil), cfg.Environment...)
+		base = make([]string, len(cfg.Environment))
+		copy(base, cfg.Environment)
 	} else {
 		base = os.Environ()
 	}
@@ -29,7 +30,8 @@ func resolveProcessEnv(cfg llmclient.RequestConfig, backendOverrides map[string]
 }
 
 func applyEnvOverlay(base []string, overlay map[string]string) []string {
-	env := append([]string(nil), base...)
+	env := make([]string, len(base))
+	copy(env, base)
 	if len(overlay) == 0 {
 		return env
 	}
@@ -69,7 +71,8 @@ func applyEnvOverlay(base []string, overlay map[string]string) []string {
 }
 
 func applyEnvOverridesLast(base []string, overrides map[string]string) []string {
-	env := append([]string(nil), base...)
+	env := make([]string, len(base))
+	copy(env, base)
 	if len(overrides) == 0 {
 		return env
 	}

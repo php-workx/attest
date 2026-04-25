@@ -36,19 +36,19 @@ type SSEEvent struct {
 //
 // Behaviour by case:
 //   - Normal event: returns (event, nil).
-//   - Stream ended before any field: returns (zero, io.EOF).
-//   - Stream ended mid-event (no trailing blank line): dispatches the
-//     accumulated partial event and returns (event, io.EOF).
+//   - Stream ended before any data field: returns (zero, io.EOF).
+//   - Stream ended mid-event (no trailing blank line): returns the accumulated
+//     partial event with nil error; the next call returns io.EOF.
 //   - Context-cancelled read: propagates the underlying error.
 func ReadEvent(r *bufio.Reader, maxBytes int) (SSEEvent, error) {
 	var ev SSEEvent
 	var dataLines [][]byte
-	hasAnyField := false
+	dataSeen := false
 
 	for {
 		line, err := ReadBoundedLine(r, maxBytes)
 		if err != nil {
-			done, retEv, retErr := handleReadEventError(err, line, &ev, &dataLines, &hasAnyField)
+			done, retEv, retErr := handleReadEventError(err, line, &ev, &dataLines, &dataSeen)
 			if done {
 				return retEv, retErr
 			}
@@ -60,8 +60,10 @@ func ReadEvent(r *bufio.Reader, maxBytes int) (SSEEvent, error) {
 
 		// An empty line dispatches the accumulated event.
 		if len(line) == 0 {
-			if !hasAnyField && len(dataLines) == 0 {
+			if !dataSeen {
 				// Heartbeat / padding empty line before any event fields.
+				ev = SSEEvent{}
+				dataLines = nil
 				continue
 			}
 			ev.Data = buildData(dataLines)
@@ -69,9 +71,7 @@ func ReadEvent(r *bufio.Reader, maxBytes int) (SSEEvent, error) {
 		}
 
 		// Parse "field: value" or "field" (no colon → value is empty string).
-		if applySSEField(&ev, &dataLines, line) {
-			hasAnyField = true
-		}
+		dataSeen = applySSEField(&ev, &dataLines, line) || dataSeen
 	}
 }
 
@@ -80,7 +80,7 @@ func handleReadEventError(
 	line []byte,
 	ev *SSEEvent,
 	dataLines *[][]byte,
-	hasAnyField *bool,
+	dataSeen *bool,
 ) (done bool, retEv SSEEvent, retErr error) {
 	if errors.Is(err, ErrLineTooLong) {
 		// Oversize line: field is dropped but does not make an otherwise-empty
@@ -94,17 +94,15 @@ func handleReadEventError(
 	if len(line) > 0 {
 		// ReadBoundedLine returned a partial line AND io.EOF together
 		// (no trailing newline). Process the field before returning.
-		if applySSEField(ev, dataLines, line) {
-			*hasAnyField = true
-		}
+		*dataSeen = applySSEField(ev, dataLines, line) || *dataSeen
 	}
-	if !*hasAnyField && len(*dataLines) == 0 {
+	if !*dataSeen {
 		// Empty stream or only blank lines seen.
 		return true, SSEEvent{}, io.EOF
 	}
 	// Partial event at EOF: dispatch what we have.
 	ev.Data = buildData(*dataLines)
-	return true, *ev, io.EOF
+	return true, *ev, nil
 }
 
 func applySSEField(ev *SSEEvent, dataLines *[][]byte, line []byte) bool {
@@ -118,14 +116,13 @@ func applySSEField(ev *SSEEvent, dataLines *[][]byte, line []byte) bool {
 		return true
 	case "event":
 		ev.Event = string(value)
-		return true
+		return false
 	case "id":
 		ev.ID = string(value)
-		return true
+		return false
 	case "retry":
 		if ms, parseErr := strconv.ParseInt(string(value), 10, 64); parseErr == nil {
 			ev.Retry = time.Duration(ms) * time.Millisecond
-			return true
 		}
 	}
 	// Lines starting with ':' are SSE comments; ignored.

@@ -222,7 +222,7 @@ func WithCodexJSONL(enabled bool) Option {
 // others.
 func WithHostTools(tools []Tool) Option {
 	return func(cfg *RequestConfig) {
-		cfg.HostTools = tools
+		cfg.HostTools = cloneTools(tools)
 	}
 }
 
@@ -307,7 +307,7 @@ func ApplyOptions(base RequestConfig, opts []Option) RequestConfig { //nolint:go
 	cfg := base
 	cfg.Environment = append([]string(nil), base.Environment...)
 	cfg.EnvironmentOverlay = copyStringMap(base.EnvironmentOverlay)
-	cfg.HostTools = append([]Tool(nil), base.HostTools...)
+	cfg.HostTools = cloneTools(base.HostTools)
 	if base.Ollama != nil {
 		ollama := *base.Ollama
 		cfg.Ollama = &ollama
@@ -327,6 +327,23 @@ func ApplyOptions(base RequestConfig, opts []Option) RequestConfig { //nolint:go
 		}
 	}
 	return cfg
+}
+
+func cloneTools(tools []Tool) []Tool {
+	if tools == nil {
+		return nil
+	}
+	out := make([]Tool, len(tools))
+	for i := range tools {
+		out[i] = tools[i]
+		if tools[i].InputSchema != nil {
+			out[i].InputSchema = make(map[string]interface{}, len(tools[i].InputSchema))
+			for key, value := range tools[i].InputSchema {
+				out[i].InputSchema[key] = value
+			}
+		}
+	}
+	return out
 }
 
 func copyStringMap(in map[string]string) map[string]string {
