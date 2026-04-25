@@ -35,6 +35,7 @@ func (e *Engine) runStructuralAnalysis(ctx context.Context) (*state.StructuralAn
 	runCtx, cancel := context.WithTimeout(ctx, structuralAnalysisTimeout)
 	defer cancel()
 
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(runCtx, toolPath, "graph", "--root", e.WorkDir, "--json") //nolint:gosec // tool path is discovered from trusted local configuration
 	cmd.Dir = e.WorkDir
 

@@ -554,6 +554,7 @@ func buildDaemonArgs(cfg DaemonConfig) []string {
 func startClaudeProcess(ctx context.Context, cfg DaemonConfig) (*claudeProcess, error) {
 	args := buildDaemonArgs(cfg)
 
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, cfg.Backend.Command, args...) //nolint:gosec // command is from trusted CLIBackend config
 	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 	cmd.Stderr = os.Stderr

@@ -15,10 +15,10 @@ default:
 # --- Quality gates ---
 
 # Pre-commit: fast local checks + fresh non-race tests
-pre-commit: fmt vet lint build-check mod-tidy actionlint gitleaks test-fast
+pre-commit: format-check vet lint-check build-check mod-tidy-check actionlint betterleaks test-fast
 
-# Pre-push: pre-commit checks + race tests + vulnerability scan
-pre-push: pre-commit test-race vuln
+# Pre-push: pre-commit checks + race tests + vulnerability scan + semgrep
+pre-push: pre-commit test-race vuln semgrep
 
 # Full quality gate: same checks as pre-push
 check: pre-push
@@ -30,7 +30,7 @@ dev: check roam sonar
 # --- Static analysis ---
 
 # Check formatting with gofumpt (detect-only, no auto-fix)
-fmt:
+format-check:
     @test -z "$({{go_tool}} gofumpt --extra -l .)" || (echo "gofumpt: unformatted files:" && {{go_tool}} gofumpt --extra -l . && exit 1)
 
 # Go vet
@@ -39,6 +39,10 @@ vet:
 
 # Lint with golangci-lint
 lint:
+    {{go_tool}} golangci-lint run --fix
+
+# Verify lint with golangci-lint
+lint-check:
     {{go_tool}} golangci-lint run
 
 # Lint GitHub Actions workflows
@@ -50,16 +54,24 @@ actionlint:
 # --- Security ---
 
 # Scan for leaked secrets
-gitleaks:
-    @if command -v gitleaks >/dev/null 2>&1; then \
-        gitleaks git --no-banner; \
+betterleaks:
+    @if command -v betterleaks >/dev/null 2>&1; then \
+        betterleaks git --no-banner; \
     else \
-        echo "warning: gitleaks not installed, skipping secret scan"; \
+        echo "warning: betterleaks not installed, skipping secret scan"; \
     fi
 
 # Scan for known vulnerabilities in dependencies
 vuln:
     {{go_tool}} govulncheck ./...
+
+# Semantic code scan (optional, skip if not installed)
+semgrep:
+    @if command -v semgrep >/dev/null 2>&1; then \
+        semgrep --config auto --error .; \
+    else \
+        echo "warning: semgrep not installed, skipping semantic scan"; \
+    fi
 
 # --- Testing ---
 
@@ -68,7 +80,7 @@ build-check:
     go build ./...
 
 # Verify go.mod and go.sum are tidy (detect-only)
-mod-tidy:
+mod-tidy-check:
     @cp go.mod go.mod.bak
     @if [ -f go.sum ]; then cp go.sum go.sum.bak; fi
     @go mod tidy
@@ -79,6 +91,10 @@ mod-tidy:
         mv go.mod.bak go.mod; \
         if [ -f go.sum.bak ]; then mv go.sum.bak go.sum; elif [ -f go.sum ]; then rm go.sum; fi; \
         if [ "$$DIRTY" = "1" ]; then echo "go.mod/go.sum not tidy — run 'go mod tidy'" && exit 1; fi
+
+# Tidy go.mod/go.sum in-place.
+mod-tidy:
+    go mod tidy
 
 # Run all tests without race detector (fresh)
 test: test-fast
@@ -144,12 +160,14 @@ format:
     {{go_tool}} gofumpt --extra -w .
 
 # Set up git hooks and development environment
-setup: install-dev
-    git config core.hooksPath .githooks
-    @echo "Git hooks configured (.githooks/)"
+setup: install-dev install-hooks
     mkdir -p .claude/skills
     ln -sfn ../../skills/fabrikk .claude/skills/fabrikk
     @echo "Claude Code skill symlinked (skills/fabrikk → .claude/skills/fabrikk)"
+
+# Install local git hooks into .git/hooks.
+install-hooks:
+    bash scripts/install-hooks.sh
 
 # Cache required development tools (pinned in tools.mod)
 install-dev:

@@ -74,6 +74,162 @@ func TestRunDirPathHelpers(t *testing.T) {
 	}
 }
 
+func TestRunDirNormalizationPathHelpers(t *testing.T) {
+	runDir := state.NewRunDir("/tmp/project", "run-456")
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "normalized artifact candidate", got: runDir.NormalizedArtifactCandidate(), want: "/tmp/project/.fabrikk/runs/run-456/normalized-artifact-candidate.json"},
+		{name: "source manifest", got: runDir.SpecNormalizationSourceManifest(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-source-manifest.json"},
+		{name: "validation", got: runDir.SpecNormalizationValidation(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-validation.json"},
+		{name: "review", got: runDir.SpecNormalizationReview(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-review.json"},
+		{name: "approval", got: runDir.RunArtifactApproval(), want: "/tmp/project/.fabrikk/runs/run-456/run-artifact-approval.json"},
+		{name: "converter prompt", got: runDir.SpecNormalizationConverterPrompt(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-converter-prompt.md"},
+		{name: "converter raw", got: runDir.SpecNormalizationConverterRaw(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-converter-raw.txt"},
+		{name: "verifier prompt", got: runDir.SpecNormalizationVerifierPrompt(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-verifier-prompt.md"},
+		{name: "verifier raw", got: runDir.SpecNormalizationVerifierRaw(), want: "/tmp/project/.fabrikk/runs/run-456/spec-normalization-verifier-raw.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("got %q, want %q", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunDirNormalizationArtifactsRoundTrip(t *testing.T) {
+	baseDir := t.TempDir()
+	runDir := state.NewRunDir(baseDir, "run-normalized")
+	if err := runDir.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	reviewedAt := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	approvedAt := reviewedAt.Add(30 * time.Minute)
+	candidate := &state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-normalized",
+		Requirements: []state.Requirement{{
+			ID:   "AT-FR-001",
+			Text: "The system must ingest prose specs.",
+		}},
+	}
+	manifest := &state.SpecNormalizationSourceManifest{
+		SchemaVersion: "0.1",
+		RunID:         "run-normalized",
+		Sources: []state.SourceManifestEntry{{
+			Path:        "docs/specs/freeform.md",
+			Fingerprint: "sha256:source",
+			ByteSize:    4096,
+			LineCount:   87,
+		}},
+	}
+	validation := []state.ReviewFinding{{
+		FindingID: "snv-001",
+		Severity:  "high",
+		Category:  "missing_source_evidence",
+		Summary:   "Requirement is missing source evidence.",
+	}}
+	review := &state.SpecNormalizationReview{
+		SchemaVersion:          "0.1",
+		RunID:                  "run-normalized",
+		ArtifactType:           state.ArtifactTypeSpecNormalizationReview,
+		Status:                 state.ReviewPass,
+		Summary:                "Normalized artifact preserves source scope.",
+		NormalizedArtifactHash: "sha256:artifact",
+		SourceManifestHash:     "sha256:manifest",
+		ReviewedInputHash:      "sha256:reviewed-input",
+		ReviewedAt:             reviewedAt,
+	}
+	approval := &state.RunArtifactApproval{
+		SchemaVersion:          "0.1",
+		RunID:                  "run-normalized",
+		ArtifactType:           state.ArtifactTypeRunArtifactApproval,
+		NormalizedArtifactHash: "sha256:artifact",
+		SourceManifestHash:     "sha256:manifest",
+		ReviewedInputHash:      "sha256:reviewed-input",
+		ApprovedAt:             approvedAt,
+	}
+
+	writes := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "WriteNormalizedArtifactCandidate", run: func() error { return runDir.WriteNormalizedArtifactCandidate(candidate) }},
+		{name: "WriteSpecNormalizationSourceManifest", run: func() error { return runDir.WriteSpecNormalizationSourceManifest(manifest) }},
+		{name: "WriteSpecNormalizationValidation", run: func() error { return runDir.WriteSpecNormalizationValidation(validation) }},
+		{name: "WriteSpecNormalizationReview", run: func() error { return runDir.WriteSpecNormalizationReview(review) }},
+		{name: "WriteRunArtifactApproval", run: func() error { return runDir.WriteRunArtifactApproval(approval) }},
+		{name: "WriteSpecNormalizationConverterPrompt", run: func() error { return runDir.WriteSpecNormalizationConverterPrompt([]byte("converter prompt")) }},
+		{name: "WriteSpecNormalizationConverterRaw", run: func() error { return runDir.WriteSpecNormalizationConverterRaw([]byte("converter raw")) }},
+		{name: "WriteSpecNormalizationVerifierPrompt", run: func() error { return runDir.WriteSpecNormalizationVerifierPrompt([]byte("verifier prompt")) }},
+		{name: "WriteSpecNormalizationVerifierRaw", run: func() error { return runDir.WriteSpecNormalizationVerifierRaw([]byte("verifier raw")) }},
+	}
+	for _, write := range writes {
+		if err := write.run(); err != nil {
+			t.Fatalf("%s: %v", write.name, err)
+		}
+	}
+
+	gotCandidate, err := runDir.ReadNormalizedArtifactCandidate()
+	if err != nil {
+		t.Fatalf("ReadNormalizedArtifactCandidate: %v", err)
+	}
+	if !reflect.DeepEqual(gotCandidate, candidate) {
+		t.Fatalf("candidate = %+v, want %+v", gotCandidate, candidate)
+	}
+	gotManifest, err := runDir.ReadSpecNormalizationSourceManifest()
+	if err != nil {
+		t.Fatalf("ReadSpecNormalizationSourceManifest: %v", err)
+	}
+	if !reflect.DeepEqual(gotManifest, manifest) {
+		t.Fatalf("manifest = %+v, want %+v", gotManifest, manifest)
+	}
+	gotValidation, err := runDir.ReadSpecNormalizationValidation()
+	if err != nil {
+		t.Fatalf("ReadSpecNormalizationValidation: %v", err)
+	}
+	if !reflect.DeepEqual(gotValidation, validation) {
+		t.Fatalf("validation = %+v, want %+v", gotValidation, validation)
+	}
+	gotReview, err := runDir.ReadSpecNormalizationReview()
+	if err != nil {
+		t.Fatalf("ReadSpecNormalizationReview: %v", err)
+	}
+	if !reflect.DeepEqual(gotReview, review) {
+		t.Fatalf("review = %+v, want %+v", gotReview, review)
+	}
+	gotApproval, err := runDir.ReadRunArtifactApproval()
+	if err != nil {
+		t.Fatalf("ReadRunArtifactApproval: %v", err)
+	}
+	if !reflect.DeepEqual(gotApproval, approval) {
+		t.Fatalf("approval = %+v, want %+v", gotApproval, approval)
+	}
+
+	assertBytesFile(t, runDir.SpecNormalizationConverterPrompt(), []byte("converter prompt"))
+	assertBytesFile(t, runDir.SpecNormalizationConverterRaw(), []byte("converter raw"))
+	assertBytesFile(t, runDir.SpecNormalizationVerifierPrompt(), []byte("verifier prompt"))
+	assertBytesFile(t, runDir.SpecNormalizationVerifierRaw(), []byte("verifier raw"))
+}
+
+func assertBytesFile(t *testing.T, path string, want []byte) {
+	t.Helper()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("ReadFile(%s) = %q, want %q", path, got, want)
+	}
+}
+
 type roundTripFixture struct {
 	artifact         *state.RunArtifact
 	tasks            []state.Task
@@ -208,6 +364,278 @@ func newRoundTripFixture(now, approvedAt time.Time) roundTripFixture {
 		},
 		techSpecMarkdown: []byte("# Technical Spec\n"),
 		execPlanMarkdown: []byte("# Execution Plan\n"),
+	}
+}
+
+func TestRunArtifactDecodesWithoutNormalizationMetadata(t *testing.T) {
+	raw := []byte(`{
+		"schema_version": "0.1",
+		"run_id": "run-legacy",
+		"source_specs": [{"path": "spec.md", "fingerprint": "sha256:spec"}],
+		"requirements": [{
+			"id": "AT-FR-001",
+			"text": "The system must ingest specs.",
+			"source_spec": "spec.md",
+			"source_line": 12
+		}],
+		"assumptions": [],
+		"clarifications": [],
+		"dependencies": [],
+		"risk_profile": "low",
+		"boundaries": {},
+		"routing_policy": {"default_implementer": "sonnet"}
+	}`)
+
+	var artifact state.RunArtifact
+	if err := json.Unmarshal(raw, &artifact); err != nil {
+		t.Fatalf("Unmarshal legacy artifact: %v", err)
+	}
+
+	if got := artifact.Normalization.Mode; got != "" {
+		t.Fatalf("Normalization.Mode = %q, want empty", got)
+	}
+	if got := artifact.Requirements[0].SourceRefs; len(got) != 0 {
+		t.Fatalf("SourceRefs = %+v, want empty", got)
+	}
+	if got := artifact.Requirements[0].Confidence; got != "" {
+		t.Fatalf("Confidence = %q, want empty", got)
+	}
+
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatalf("Marshal legacy artifact: %v", err)
+	}
+	var remarshal map[string]any
+	if err := json.Unmarshal(data, &remarshal); err != nil {
+		t.Fatalf("Unmarshal remarshal artifact: %v", err)
+	}
+	if _, ok := remarshal["normalization"]; ok {
+		t.Fatalf("normalization key present in remarshal: %s", data)
+	}
+}
+
+func TestRunArtifactNormalizationMetadataJSON(t *testing.T) {
+	reviewedAt := time.Date(2026, 4, 15, 10, 30, 0, 0, time.UTC)
+	approvedAt := reviewedAt.Add(time.Hour)
+	artifact := state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         "run-normalized",
+		SourceSpecs: []state.SourceSpec{
+			{Path: "spec.md", Fingerprint: "sha256:spec"},
+		},
+		Requirements: []state.Requirement{{
+			ID:         "AT-FR-001",
+			Text:       "The system must ingest prose specs.",
+			SourceSpec: "spec.md",
+			SourceLine: 12,
+			SourceRefs: []state.SourceRef{{
+				Path:        "spec.md",
+				LineStart:   12,
+				LineEnd:     14,
+				SectionPath: "Goals",
+				Excerpt:     "The system must ingest prose specs.",
+			}},
+			Confidence: "high",
+		}},
+		Normalization: state.NormalizationMetadata{
+			Mode:                  state.NormalizationAuto,
+			UsedLLM:               true,
+			UsedDeterministic:     false,
+			FallbackDeterministic: false,
+			ConsentSource:         "flag",
+			ConverterBackend:      "converter",
+			VerifierBackend:       "verifier",
+			ReviewedAt:            &reviewedAt,
+			ApprovedAt:            &approvedAt,
+			ReviewedInputHash:     "sha256:reviewed",
+		},
+	}
+
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatalf("Marshal artifact: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal marshaled artifact: %v", err)
+	}
+
+	normalization := got["normalization"].(map[string]any)
+	if normalization["mode"] != "auto" {
+		t.Fatalf("normalization.mode = %v, want auto", normalization["mode"])
+	}
+	if normalization["used_llm"] != true {
+		t.Fatalf("normalization.used_llm = %v, want true", normalization["used_llm"])
+	}
+	if normalization["used_deterministic"] != false {
+		t.Fatalf("normalization.used_deterministic = %v, want false", normalization["used_deterministic"])
+	}
+	if normalization["fallback_deterministic"] != false {
+		t.Fatalf("normalization.fallback_deterministic = %v, want false", normalization["fallback_deterministic"])
+	}
+	for key, want := range map[string]string{
+		"consent_source":      "flag",
+		"converter_backend":   "converter",
+		"verifier_backend":    "verifier",
+		"reviewed_at":         reviewedAt.Format(time.RFC3339),
+		"approved_at":         approvedAt.Format(time.RFC3339),
+		"reviewed_input_hash": "sha256:reviewed",
+	} {
+		if normalization[key] != want {
+			t.Fatalf("normalization.%s = %v, want %q", key, normalization[key], want)
+		}
+	}
+
+	requirements := got["requirements"].([]any)
+	requirement := requirements[0].(map[string]any)
+	if requirement["confidence"] != "high" {
+		t.Fatalf("requirement.confidence = %v, want high", requirement["confidence"])
+	}
+	sourceRefs := requirement["source_refs"].([]any)
+	sourceRef := sourceRefs[0].(map[string]any)
+	for key, want := range map[string]any{
+		"path":         "spec.md",
+		"line_start":   float64(12),
+		"line_end":     float64(14),
+		"section_path": "Goals",
+		"excerpt":      "The system must ingest prose specs.",
+	} {
+		if sourceRef[key] != want {
+			t.Fatalf("source_refs[0].%s = %v, want %v", key, sourceRef[key], want)
+		}
+	}
+}
+
+func TestSpecNormalizationReviewApprovalAndManifestJSONRoundTrip(t *testing.T) {
+	reviewedAt := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	approvedAt := reviewedAt.Add(30 * time.Minute)
+
+	review := state.SpecNormalizationReview{
+		SchemaVersion:          "0.1",
+		RunID:                  "run-normalized",
+		ArtifactType:           state.ArtifactTypeSpecNormalizationReview,
+		Status:                 state.ReviewNeedsRevision,
+		Summary:                "One source requirement is ambiguous.",
+		NormalizedArtifactHash: "sha256:artifact",
+		SourceManifestHash:     "sha256:manifest",
+		ReviewedInputHash:      "sha256:reviewed-input",
+		ReviewedAt:             reviewedAt,
+		BlockingFindings: []state.ReviewFinding{{
+			FindingID:      "snr-001",
+			Severity:       "high",
+			Category:       "ambiguous_requirement",
+			Summary:        "Clarify retention behavior.",
+			RequirementIDs: []string{"AT-FR-001"},
+		}},
+		Warnings: []state.ReviewWarning{{
+			WarningID: "snr-w-001",
+			Summary:   "Source evidence is broad.",
+		}},
+	}
+	approval := state.RunArtifactApproval{
+		SchemaVersion:          "0.1",
+		RunID:                  "run-normalized",
+		ArtifactType:           state.ArtifactTypeRunArtifactApproval,
+		NormalizedArtifactHash: "sha256:artifact",
+		SourceManifestHash:     "sha256:manifest",
+		ReviewedInputHash:      "sha256:reviewed-input",
+		ApprovedAt:             approvedAt,
+	}
+	manifest := state.SpecNormalizationSourceManifest{
+		SchemaVersion: "0.1",
+		RunID:         "run-normalized",
+		Sources: []state.SourceManifestEntry{{
+			Path:        "docs/specs/freeform.md",
+			Fingerprint: "sha256:source",
+			ByteSize:    4096,
+			LineCount:   87,
+		}},
+	}
+	reviewedInput := state.SpecNormalizationReviewedInput{
+		SourceManifestHash:     "sha256:manifest",
+		NormalizedArtifactHash: "sha256:artifact",
+		ConverterPromptHash:    "sha256:converter-prompt",
+		VerifierPromptHash:     "sha256:verifier-prompt",
+	}
+
+	assertJSONRoundTrip(t, review)
+	assertJSONRoundTrip(t, approval)
+	assertJSONRoundTrip(t, manifest)
+	assertJSONRoundTrip(t, reviewedInput)
+
+	if review.ArtifactType == approval.ArtifactType {
+		t.Fatalf("normalization review and run-artifact approval artifact_type values must differ")
+	}
+
+	var raw map[string]any
+	data, err := json.Marshal(review)
+	if err != nil {
+		t.Fatalf("Marshal review: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal review map: %v", err)
+	}
+	for _, key := range []string{"normalized_artifact_hash", "source_manifest_hash", "reviewed_input_hash"} {
+		if raw[key] == "" {
+			t.Fatalf("review JSON missing %q: %s", key, data)
+		}
+	}
+	if raw["artifact_type"] != "spec_normalization_review" {
+		t.Fatalf("review artifact_type = %v, want spec_normalization_review", raw["artifact_type"])
+	}
+
+	data, err = json.Marshal(approval)
+	if err != nil {
+		t.Fatalf("Marshal approval: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal approval map: %v", err)
+	}
+	if raw["artifact_type"] != "run_artifact_approval" {
+		t.Fatalf("approval artifact_type = %v, want run_artifact_approval", raw["artifact_type"])
+	}
+	for _, key := range []string{"normalized_artifact_hash", "source_manifest_hash", "reviewed_input_hash"} {
+		if raw[key] == "" {
+			t.Fatalf("approval JSON missing %q: %s", key, data)
+		}
+	}
+
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("Marshal manifest: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal manifest map: %v", err)
+	}
+	sources := raw["sources"].([]any)
+	source := sources[0].(map[string]any)
+	for key, want := range map[string]any{
+		"path":        "docs/specs/freeform.md",
+		"fingerprint": "sha256:source",
+		"byte_size":   float64(4096),
+		"line_count":  float64(87),
+	} {
+		if source[key] != want {
+			t.Fatalf("sources[0].%s = %v, want %v", key, source[key], want)
+		}
+	}
+}
+
+func assertJSONRoundTrip[T any](t *testing.T, want T) {
+	t.Helper()
+
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("Marshal %T: %v", want, err)
+	}
+
+	var got T
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal %T: %v", want, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip %T = %+v, want %+v", want, got, want)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,6 +21,20 @@ import (
 )
 
 const emptyExplorationJSON = `{"file_inventory":[],"symbols":[],"test_files":[],"reuse_points":[]}`
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeFileWithName(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	writeFile(t, path, content)
+	return path
+}
 
 func TestParseReviewFlagsStaggerDelay(t *testing.T) {
 	rf, err := parseReviewFlags([]string{"--council", "--stagger-delay", "0"})
@@ -48,6 +63,706 @@ func TestParseReviewFlagsStaggerDelay(t *testing.T) {
 	if _, err := parseReviewFlags([]string{"--mode", "--council"}); err == nil {
 		t.Fatal("parseReviewFlags missing mode error = nil, want error")
 	}
+}
+
+func TestParsePrepareFlagsNormalization(t *testing.T) {
+	flags, err := parsePrepareFlags([]string{
+		"--spec", "spec.md",
+		"--normalize", "always",
+		"--allow-llm-normalization",
+		"--trust-project-config",
+		"--fallback-deterministic",
+		"--converter-backend", agentcli.BackendClaude,
+		"--verifier-backend", agentcli.BackendCodex,
+	})
+	if err != nil {
+		t.Fatalf("parsePrepareFlags valid flags: %v", err)
+	}
+	if !slices.Equal(flags.specPaths, []string{"spec.md"}) {
+		t.Fatalf("specPaths = %+v, want [spec.md]", flags.specPaths)
+	}
+	if flags.options.NormalizeMode != state.NormalizationAlways {
+		t.Fatalf("normalize mode = %q, want always", flags.options.NormalizeMode)
+	}
+	if !flags.options.LLMConsent || flags.options.LLMConsentSource != consentSourceCLI {
+		t.Fatalf("LLM consent = %v/%q, want true/cli", flags.options.LLMConsent, flags.options.LLMConsentSource)
+	}
+	if !flags.trustProjectConfig {
+		t.Fatal("trustProjectConfig = false, want true")
+	}
+	if !flags.options.FallbackDeterministic {
+		t.Fatal("fallback deterministic = false, want true")
+	}
+	if flags.options.ConverterBackendName != agentcli.BackendClaude || flags.options.VerifierBackendName != agentcli.BackendCodex {
+		t.Fatalf("backends = %q/%q, want claude/codex", flags.options.ConverterBackendName, flags.options.VerifierBackendName)
+	}
+
+	if _, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "sometimes"}); err == nil {
+		t.Fatal("unknown normalize mode error = nil, want error")
+	}
+	if _, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "never", "--fallback-deterministic"}); err == nil {
+		t.Fatal("fallback with never error = nil, want error")
+	}
+	alwaysFlags, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "always"})
+	if err != nil {
+		t.Fatalf("parse always without consent: %v", err)
+	}
+	if err := validatePrepareFlags(alwaysFlags); err == nil {
+		t.Fatal("always without consent error = nil, want error")
+	}
+}
+
+func TestTrustedPrepareConfigConsent(t *testing.T) {
+	t.Run("enabled config grants consent only when trusted", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "fabrikk.yaml"), "spec_normalization:\n  allow_llm_normalization: true\n")
+		flags, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "always", "--trust-project-config"})
+		if err != nil {
+			t.Fatalf("parsePrepareFlags: %v", err)
+		}
+		if err := applyTrustedPrepareConfig(dir, &flags); err != nil {
+			t.Fatalf("applyTrustedPrepareConfig: %v", err)
+		}
+		if err := validatePrepareFlags(flags); err != nil {
+			t.Fatalf("validatePrepareFlags: %v", err)
+		}
+		if !flags.options.LLMConsent || flags.options.LLMConsentSource != "config" {
+			t.Fatalf("consent = %v/%q, want true/config", flags.options.LLMConsent, flags.options.LLMConsentSource)
+		}
+	})
+
+	t.Run("untrusted config does not grant consent", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "fabrikk.yaml"), "spec_normalization:\n  allow_llm_normalization: true\n")
+		flags, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "always"})
+		if err != nil {
+			t.Fatalf("parsePrepareFlags: %v", err)
+		}
+		if err := applyTrustedPrepareConfig(dir, &flags); err != nil {
+			t.Fatalf("applyTrustedPrepareConfig: %v", err)
+		}
+		if flags.options.LLMConsent {
+			t.Fatalf("consent = %v, want false without --trust-project-config", flags.options.LLMConsent)
+		}
+		if err := validatePrepareFlags(flags); err == nil {
+			t.Fatal("validatePrepareFlags without consent error = nil, want error")
+		}
+	})
+
+	t.Run("cli flag remains one off source", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "fabrikk.yaml"), "spec_normalization:\n  allow_llm_normalization: true\n")
+		flags, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "always", "--allow-llm-normalization", "--trust-project-config"})
+		if err != nil {
+			t.Fatalf("parsePrepareFlags: %v", err)
+		}
+		if err := applyTrustedPrepareConfig(dir, &flags); err != nil {
+			t.Fatalf("applyTrustedPrepareConfig: %v", err)
+		}
+		if flags.options.LLMConsentSource != consentSourceCLI {
+			t.Fatalf("consent source = %q, want cli", flags.options.LLMConsentSource)
+		}
+	})
+
+	t.Run("missing config does not grant consent", func(t *testing.T) {
+		dir := t.TempDir()
+		flags, err := parsePrepareFlags([]string{"--spec", "spec.md", "--normalize", "always"})
+		if err != nil {
+			t.Fatalf("parsePrepareFlags: %v", err)
+		}
+		if err := applyTrustedPrepareConfig(dir, &flags); err != nil {
+			t.Fatalf("applyTrustedPrepareConfig: %v", err)
+		}
+		if err := validatePrepareFlags(flags); err == nil {
+			t.Fatal("validatePrepareFlags without consent error = nil, want error")
+		}
+	})
+}
+
+func TestCmdPrepareReportsNormalizationOutcomes(t *testing.T) {
+	t.Run("deterministic success", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		spec := writeFileWithName(t, dir, "spec.md", "- **AT-FR-001**: The system must import tasks.\n")
+
+		output := captureStdout(t, func() {
+			if err := cmdPrepare(context.Background(), []string{"--spec", spec}); err != nil {
+				t.Fatalf("cmdPrepare: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Run prepared:")
+		assertContains(t, output, "Requirements: 1")
+		assertContains(t, output, "Source specs: 1")
+		assertContains(t, output, "Normalization: deterministic mode=auto")
+		assertContains(t, output, "Run directory: .fabrikk/runs/")
+		assertContains(t, output, "Next: fabrikk review")
+	})
+
+	t.Run("llm pass", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		spec := writeFileWithName(t, dir, "spec.md", "The system should import tasks from Markdown sentences.\n")
+		stubCommandSpecNormalizationLLM(t, state.ReviewPass, false)
+
+		output := captureStdout(t, func() {
+			if err := cmdPrepare(context.Background(), []string{"--spec", spec, "--normalize", "always", "--allow-llm-normalization"}); err != nil {
+				t.Fatalf("cmdPrepare: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization: llm mode=always converter=claude verifier=claude")
+		assertContains(t, output, "Normalization review: pass")
+		assertContains(t, output, "Blocking findings: 0")
+		assertContains(t, output, "Next: fabrikk artifact approve")
+	})
+
+	t.Run("verifier failure", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		spec := writeFileWithName(t, dir, "spec.md", "The system should import tasks from Markdown sentences.\n")
+		stubCommandSpecNormalizationLLM(t, state.ReviewFail, false)
+
+		output := captureStdout(t, func() {
+			if err := cmdPrepare(context.Background(), []string{"--spec", spec, "--normalize", "always", "--allow-llm-normalization"}); err != nil {
+				t.Fatalf("cmdPrepare: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization review: fail")
+		assertContains(t, output, "Blocking findings: 1")
+		assertContains(t, output, "Next: inspect spec normalization review findings before approving")
+	})
+
+	t.Run("no consent free form", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		spec := writeFileWithName(t, dir, "spec.md", "The system should import tasks from Markdown sentences.\n")
+
+		output := captureStdout(t, func() {
+			if err := cmdPrepare(context.Background(), []string{"--spec", spec}); err != nil {
+				t.Fatalf("cmdPrepare: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Prepare paused.")
+		assertContains(t, output, "Status: awaiting_user_input")
+		assertContains(t, output, "Blocking: true")
+		assertContains(t, output, "--allow-llm-normalization")
+	})
+
+	t.Run("deterministic fallback warning", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		spec := writeFileWithName(t, dir, "spec.md", "- The system should import tasks from Markdown bullets.\n")
+		stubCommandSpecNormalizationLLM(t, state.ReviewPass, true)
+
+		output := captureStdout(t, func() {
+			if err := cmdPrepare(context.Background(), []string{"--spec", spec, "--normalize", "always", "--allow-llm-normalization", "--fallback-deterministic"}); err != nil {
+				t.Fatalf("cmdPrepare: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization: deterministic fallback mode=always")
+		assertContains(t, output, "Warning: deterministic fallback was used")
+	})
+}
+
+func TestCmdReviewShowsNormalizationEvidence(t *testing.T) {
+	t.Run("pass", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		writeNormalizationReviewFixture(t, dir, "run-pass", state.ReviewPass, true, false)
+
+		output := captureStdout(t, func() {
+			if err := cmdReview(context.Background(), []string{"run-pass"}); err != nil {
+				t.Fatalf("cmdReview: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization: llm mode=always")
+		assertContains(t, output, "Converter backend: claude")
+		assertContains(t, output, "Verifier backend: claude")
+		assertContains(t, output, "Normalization review: pass")
+		assertContains(t, output, "Blocking findings: 0")
+		assertContains(t, output, "reviewed_input_hash: sha256:")
+		assertContains(t, output, "Source freshness: current")
+		assertContains(t, output, "Source refs:")
+		assertContains(t, output, "Next: fabrikk artifact approve run-pass")
+	})
+
+	t.Run("needs revision", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		writeNormalizationReviewFixture(t, dir, "run-revision", state.ReviewNeedsRevision, true, false)
+
+		output := captureStdout(t, func() {
+			if err := cmdReview(context.Background(), []string{"run-revision"}); err != nil {
+				t.Fatalf("cmdReview: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization review: needs_revision")
+		assertContains(t, output, "fabrikk artifact approve run-revision --accept-needs-revision")
+	})
+
+	t.Run("fail", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		writeNormalizationReviewFixture(t, dir, "run-fail", state.ReviewFail, true, false)
+
+		output := captureStdout(t, func() {
+			if err := cmdReview(context.Background(), []string{"run-fail"}); err != nil {
+				t.Fatalf("cmdReview: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization review: fail")
+		assertContains(t, output, "Missing source requirement.")
+		assertContains(t, output, "revise the source spec before approval")
+	})
+
+	t.Run("missing review", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		writeNormalizationReviewFixture(t, dir, "run-missing", state.ReviewPass, false, false)
+
+		output := captureStdout(t, func() {
+			if err := cmdReview(context.Background(), []string{"run-missing"}); err != nil {
+				t.Fatalf("cmdReview: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization review: missing")
+	})
+
+	t.Run("stale source", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		specPath := writeNormalizationReviewFixture(t, dir, "run-stale", state.ReviewPass, true, false)
+		writeFile(t, specPath, "Changed source.\n")
+
+		output := captureStdout(t, func() {
+			if err := cmdReview(context.Background(), []string{"run-stale"}); err != nil {
+				t.Fatalf("cmdReview: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Source freshness: stale")
+	})
+
+	t.Run("deterministic", func(t *testing.T) {
+		dir := t.TempDir()
+		withWorkingDir(t, dir)
+		writeNormalizationReviewFixture(t, dir, "run-deterministic", state.ReviewPass, false, true)
+
+		output := captureStdout(t, func() {
+			if err := cmdReview(context.Background(), []string{"run-deterministic"}); err != nil {
+				t.Fatalf("cmdReview: %v", err)
+			}
+		})
+
+		assertContains(t, output, "Normalization: deterministic mode=auto")
+	})
+}
+
+func TestCmdArtifactApproveSuccess(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	writeNormalizationReviewFixture(t, dir, "run-pass", state.ReviewPass, true, false)
+
+	output := captureStdout(t, func() {
+		if err := cmdArtifact(context.Background(), []string{"approve", "run-pass"}); err != nil {
+			t.Fatalf("cmdArtifact: %v", err)
+		}
+	})
+
+	assertContains(t, output, "Run artifact approved: run-pass")
+	runDir := state.NewRunDir(dir, "run-pass")
+	if _, err := runDir.ReadRunArtifactApproval(); err != nil {
+		t.Fatalf("read run artifact approval: %v", err)
+	}
+	artifact, err := runDir.ReadArtifact()
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if artifact.Normalization.ApprovedAt == nil || artifact.Normalization.ReviewedAt == nil || artifact.Normalization.ReviewedInputHash == "" {
+		t.Fatalf("normalization metadata = %+v", artifact.Normalization)
+	}
+}
+
+func TestCmdArtifactApproveRejectsMissingReview(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	writeNormalizationReviewFixture(t, dir, "run-missing", state.ReviewPass, false, false)
+
+	err := cmdArtifact(context.Background(), []string{"approve", "run-missing"})
+	if err == nil || !strings.Contains(err.Error(), "normalization review") {
+		t.Fatalf("err = %v, want missing review error", err)
+	}
+}
+
+func TestCmdArtifactApproveRejectsFailingReview(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	writeNormalizationReviewFixture(t, dir, "run-fail", state.ReviewFail, true, false)
+
+	err := cmdArtifact(context.Background(), []string{"approve", "run-fail"})
+	if err == nil || !strings.Contains(err.Error(), "not passing") {
+		t.Fatalf("err = %v, want failing review error", err)
+	}
+}
+
+func TestCmdArtifactApproveRejectsStaleSource(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	specPath := writeNormalizationReviewFixture(t, dir, "run-stale", state.ReviewPass, true, false)
+	writeFile(t, specPath, "Changed source.\n")
+
+	err := cmdArtifact(context.Background(), []string{"approve", "run-stale"})
+	if err == nil || !strings.Contains(err.Error(), "source changed") {
+		t.Fatalf("err = %v, want stale source error", err)
+	}
+}
+
+func TestCmdArtifactApproveNeedsRevisionRequiresOverride(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	writeNormalizationReviewFixture(t, dir, "run-needs-revision", state.ReviewNeedsRevision, true, false)
+
+	err := cmdArtifact(context.Background(), []string{"approve", "run-needs-revision"})
+	if err == nil || !strings.Contains(err.Error(), "--accept-needs-revision") {
+		t.Fatalf("err = %v, want explicit override guidance", err)
+	}
+}
+
+func TestCmdArtifactApproveNeedsRevisionOverride(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	writeNormalizationReviewFixture(t, dir, "run-needs-revision-override", state.ReviewNeedsRevision, true, false)
+
+	output := captureStdout(t, func() {
+		if err := cmdArtifact(context.Background(), []string{"approve", "run-needs-revision-override", "--accept-needs-revision"}); err != nil {
+			t.Fatalf("cmdArtifact: %v", err)
+		}
+	})
+
+	assertContains(t, output, "Run artifact approved: run-needs-revision-override")
+	runDir := state.NewRunDir(dir, "run-needs-revision-override")
+	approval, err := runDir.ReadRunArtifactApproval()
+	if err != nil {
+		t.Fatalf("read run artifact approval: %v", err)
+	}
+	if !approval.AcceptedNeedsRevision || approval.ReviewStatus != state.ReviewNeedsRevision {
+		t.Fatalf("approval = %+v, want needs_revision override recorded", approval)
+	}
+}
+
+func TestCmdArtifactApproveRejectsChangedCandidate(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	writeNormalizationReviewFixture(t, dir, "run-changed", state.ReviewPass, true, false)
+	runDir := state.NewRunDir(dir, "run-changed")
+	candidate, err := runDir.ReadNormalizedArtifactCandidate()
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	candidate.Requirements[0].Text = "Changed requirement."
+	if err := runDir.WriteNormalizedArtifactCandidate(candidate); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+
+	err = cmdArtifact(context.Background(), []string{"approve", "run-changed"})
+	if err == nil || !strings.Contains(err.Error(), "normalized_artifact_hash") {
+		t.Fatalf("err = %v, want changed candidate error", err)
+	}
+}
+
+func TestNormalizationCLISmokePrepareReviewArtifactApprove(t *testing.T) {
+	dir := t.TempDir()
+	withWorkingDir(t, dir)
+	spec := writeFileWithName(t, dir, "free-form.md", "The system should import tasks from Markdown sentences.\n")
+	stubCommandSpecNormalizationLLM(t, state.ReviewPass, false)
+
+	prepareOutput := captureStdout(t, func() {
+		if err := cmdPrepare(context.Background(), []string{"--spec", spec, "--normalize", "always", "--allow-llm-normalization"}); err != nil {
+			t.Fatalf("cmdPrepare: %v", err)
+		}
+	})
+	assertContains(t, prepareOutput, "Next: fabrikk artifact approve")
+	runID := outputLineValue(prepareOutput, "Run prepared: ")
+	if runID == "" {
+		t.Fatalf("could not parse run id from output:\n%s", prepareOutput)
+	}
+
+	reviewOutput := captureStdout(t, func() {
+		if err := cmdReview(context.Background(), []string{runID}); err != nil {
+			t.Fatalf("cmdReview: %v", err)
+		}
+	})
+	assertContains(t, reviewOutput, "Normalization review: pass")
+	assertContains(t, reviewOutput, "Source freshness: current")
+	assertContains(t, reviewOutput, "Next: fabrikk artifact approve "+runID)
+
+	approveOutput := captureStdout(t, func() {
+		if err := cmdArtifact(context.Background(), []string{"approve", runID}); err != nil {
+			t.Fatalf("cmdArtifact approve: %v", err)
+		}
+	})
+	assertContains(t, approveOutput, "Run artifact approved: "+runID)
+	runDir := state.NewRunDir(dir, runID)
+	if _, err := runDir.ReadRunArtifactApproval(); err != nil {
+		t.Fatalf("read run artifact approval: %v", err)
+	}
+}
+
+func stubCommandSpecNormalizationLLM(t *testing.T, status state.ReviewStatus, failConverter bool) {
+	t.Helper()
+
+	old := agentcli.InvokeFunc
+	agentcli.InvokeFunc = func(ctx context.Context, backend *agentcli.CLIBackend, prompt string, timeoutSec int) (string, error) {
+		runID := commandPromptLineValue(prompt, "Run ID: ")
+		switch {
+		case strings.Contains(prompt, "# spec normalization converter"):
+			if failConverter {
+				return "partial converter output", errors.New("converter unavailable")
+			}
+			sourcePath := commandPromptLineValue(prompt, "## Source: ")
+			fingerprint := commandPromptLineValue(prompt, "Fingerprint: ")
+			sourceText := commandPromptLineValue(prompt, "1 | ")
+			return commandSpecArtifactJSON(t, runID, sourcePath, fingerprint, sourceText), nil
+		case strings.Contains(prompt, "# spec normalization verifier"):
+			findings := []state.ReviewFinding(nil)
+			if status != state.ReviewPass {
+				findings = []state.ReviewFinding{{
+					FindingID:       "snr-001",
+					Severity:        "high",
+					Category:        "lost_information",
+					Summary:         "Missing source requirement.",
+					SuggestedRepair: "Restore the missing requirement.",
+				}}
+			}
+			review := state.SpecNormalizationReview{
+				SchemaVersion:          "0.1",
+				RunID:                  runID,
+				ArtifactType:           state.ArtifactTypeSpecNormalizationReview,
+				Status:                 status,
+				Summary:                "Verifier summary.",
+				NormalizedArtifactHash: commandPromptLineValue(prompt, "Normalized artifact hash: "),
+				SourceManifestHash:     commandPromptLineValue(prompt, "Source manifest hash: "),
+				ReviewedInputHash:      commandPromptLineValue(prompt, "Reviewed input hash: "),
+				ReviewedAt:             time.Unix(1, 0).UTC(),
+				BlockingFindings:       findings,
+			}
+			data, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(data), nil
+		default:
+			t.Fatalf("unexpected prompt:\n%s", prompt)
+			return "", nil
+		}
+	}
+	t.Cleanup(func() {
+		agentcli.InvokeFunc = old
+	})
+}
+
+func commandSpecArtifactJSON(t *testing.T, runID, sourcePath, fingerprint, sourceText string) string {
+	t.Helper()
+
+	artifact := state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         runID,
+		SourceSpecs: []state.SourceSpec{{
+			Path:        sourcePath,
+			Fingerprint: fingerprint,
+		}},
+		Requirements: []state.Requirement{{
+			ID:         "AT-FR-001",
+			Text:       sourceText,
+			SourceSpec: sourcePath,
+			SourceRefs: []state.SourceRef{{
+				Path:      sourcePath,
+				LineStart: 1,
+				LineEnd:   1,
+				Excerpt:   sourceText,
+			}},
+			Confidence: "high",
+		}},
+		RiskProfile:   "standard",
+		RoutingPolicy: state.RoutingPolicy{DefaultImplementer: "claude-sonnet"},
+	}
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func commandPromptLineValue(prompt, prefix string) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func outputLineValue(output, prefix string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func writeNormalizationReviewFixture(t *testing.T, dir, runID string, status state.ReviewStatus, withReview, deterministic bool) string {
+	t.Helper()
+
+	specPath := writeFileWithName(t, dir, runID+"-spec.md", "The system should import tasks.\n")
+	fingerprint, err := state.SHA256File(specPath)
+	if err != nil {
+		t.Fatalf("hash source: %v", err)
+	}
+	metadata := state.NormalizationMetadata{
+		Mode:                  state.NormalizationAlways,
+		UsedLLM:               true,
+		ConsentSource:         consentSourceCLI,
+		ConverterBackend:      agentcli.BackendClaude,
+		VerifierBackend:       agentcli.BackendClaude,
+		UsedDeterministic:     false,
+		FallbackDeterministic: false,
+	}
+	if deterministic {
+		metadata = state.NormalizationMetadata{
+			Mode:              state.NormalizationAuto,
+			UsedDeterministic: true,
+		}
+	}
+	artifact := &state.RunArtifact{
+		SchemaVersion: "0.1",
+		RunID:         runID,
+		SourceSpecs:   []state.SourceSpec{{Path: specPath, Fingerprint: fingerprint}},
+		Requirements: []state.Requirement{{
+			ID:         "AT-FR-001",
+			Text:       "The system should import tasks.",
+			SourceSpec: specPath,
+			SourceRefs: []state.SourceRef{{
+				Path:      specPath,
+				LineStart: 1,
+				LineEnd:   1,
+				Excerpt:   "The system should import tasks.",
+			}},
+			Confidence: "high",
+		}},
+		RiskProfile:   "standard",
+		RoutingPolicy: state.RoutingPolicy{DefaultImplementer: "claude-sonnet"},
+		Normalization: metadata,
+	}
+	writeRunFixture(t, dir, runID, runFixture{artifact: artifact})
+
+	runDir := state.NewRunDir(dir, runID)
+	if !deterministic {
+		manifest := &state.SpecNormalizationSourceManifest{
+			SchemaVersion: "0.1",
+			RunID:         runID,
+			Sources: []state.SourceManifestEntry{{
+				Path:             specPath,
+				Fingerprint:      fingerprint,
+				ByteSize:         int64(len("The system should import tasks.\n")),
+				LineCount:        1,
+				LineNumberedText: "1 | The system should import tasks.",
+			}},
+		}
+		if err := runDir.WriteSpecNormalizationSourceManifest(manifest); err != nil {
+			t.Fatalf("write source manifest: %v", err)
+		}
+		if err := runDir.WriteNormalizedArtifactCandidate(artifact); err != nil {
+			t.Fatalf("write normalized candidate: %v", err)
+		}
+		if err := runDir.WriteSpecNormalizationConverterPrompt([]byte("converter")); err != nil {
+			t.Fatalf("write converter prompt: %v", err)
+		}
+		if err := runDir.WriteSpecNormalizationVerifierPrompt([]byte("verifier")); err != nil {
+			t.Fatalf("write verifier prompt: %v", err)
+		}
+		if withReview {
+			artifactHash := testCommandNormalizedArtifactHash(t, artifact)
+			manifestHash := testCommandSourceManifestHash(t, manifest)
+			reviewedInputHash := testCommandReviewedInputHash(t, state.SpecNormalizationReviewedInput{
+				NormalizedArtifactHash: artifactHash,
+				SourceManifestHash:     manifestHash,
+				ConverterPromptHash:    testCommandPromptHash(t, "converter"),
+				VerifierPromptHash:     testCommandPromptHash(t, "verifier"),
+			})
+			findings := []state.ReviewFinding(nil)
+			if status != state.ReviewPass {
+				findings = []state.ReviewFinding{{
+					FindingID:       "snr-001",
+					Severity:        "high",
+					Category:        "lost_information",
+					Summary:         "Missing source requirement.",
+					SuggestedRepair: "Restore missing source requirement.",
+				}}
+			}
+			if err := runDir.WriteSpecNormalizationReview(&state.SpecNormalizationReview{
+				SchemaVersion:          "0.1",
+				RunID:                  runID,
+				ArtifactType:           state.ArtifactTypeSpecNormalizationReview,
+				Status:                 status,
+				Summary:                "Verifier summary.",
+				NormalizedArtifactHash: artifactHash,
+				SourceManifestHash:     manifestHash,
+				ReviewedInputHash:      reviewedInputHash,
+				ReviewedAt:             time.Unix(1, 0).UTC(),
+				BlockingFindings:       findings,
+			}); err != nil {
+				t.Fatalf("write review: %v", err)
+			}
+		}
+	}
+	return specPath
+}
+
+func testCommandNormalizedArtifactHash(t *testing.T, artifact *state.RunArtifact) string {
+	t.Helper()
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "sha256:" + state.SHA256Bytes(data)
+}
+
+func testCommandSourceManifestHash(t *testing.T, manifest *state.SpecNormalizationSourceManifest) string {
+	t.Helper()
+	sanitized := *manifest
+	sanitized.Sources = make([]state.SourceManifestEntry, len(manifest.Sources))
+	for i, source := range manifest.Sources {
+		source.LineNumberedText = ""
+		sanitized.Sources[i] = source
+	}
+	data, err := json.Marshal(sanitized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "sha256:" + state.SHA256Bytes(data)
+}
+
+func testCommandPromptHash(t *testing.T, prompt string) string {
+	t.Helper()
+	return "sha256:" + state.SHA256Bytes([]byte(prompt))
+}
+
+func testCommandReviewedInputHash(t *testing.T, reviewedInput state.SpecNormalizationReviewedInput) string {
+	t.Helper()
+	data, err := json.Marshal(reviewedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "sha256:" + state.SHA256Bytes(data)
 }
 
 func TestBoundaryFlagValueRejectsFollowingFlag(t *testing.T) {
